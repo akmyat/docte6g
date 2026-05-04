@@ -27,14 +27,22 @@
 #include "ns3/channel-condition-model.h"
 
 #include <map>
+#include <cstdint>
+#include <ostream>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace ns3
 {
 
 /**
- * Sionna Phased Array Spectrum Propagation Loss Model
+ * Sionna phased-array spectrum propagation loss model.
  *
- * TODO: not yet implemented
+ * The scalar propagation path loss is applied by SionnaPropagationLossModel
+ * before this model is called. This model then applies ns-3 phased-array
+ * beamforming/element gain and a normalized Sionna frequency-selective fading
+ * response to the received PSD.
  */
 class SionnaPhasedArraySpectrumPropagationLossModel : public PhasedArraySpectrumPropagationLossModel
 {
@@ -60,6 +68,14 @@ class SionnaPhasedArraySpectrumPropagationLossModel : public PhasedArraySpectrum
 
     void SetPropagationCache(Ptr<SionnaPropagationCache> propagationCache);
 
+    void ExportMimoChannelGainStats(const std::string& path) const;
+    void AppendPerfStats(std::ostream& os) const;
+
+    uint64_t GetBeamformingSampleCount() const;
+    double GetAverageBeamformingGain() const;
+    double GetMinBeamformingGain() const;
+    double GetMaxBeamformingGain() const;
+
     /**
      * \brief Assign a fixed random variable stream number to the random variables
      * used by this model.
@@ -72,12 +88,9 @@ class SionnaPhasedArraySpectrumPropagationLossModel : public PhasedArraySpectrum
     /**
      * \brief Compute the received PSD.
      *
-     * This function computes the received PSD by applying the Fluctuating Two-Ray (FTR)
-     * fast fading model and the beamforming gain.
-     * In particular, the beamforming gain is computed as the combination of the single-element
-     * and the array gains.
-     * The path loss and shadowing are to be computed separately, using the
-     * ThreeGppPropagationLossModel class.
+     * This function computes the received PSD by applying ns-3 phased-array
+     * beamforming gain and normalized Sionna frequency-selective fading. Wideband
+     * path loss is computed separately by SionnaPropagationLossModel.
      *
      * \param txPsd the PSD of the transmitted signal
      * \param a first node mobility model
@@ -121,7 +134,51 @@ class SionnaPhasedArraySpectrumPropagationLossModel : public PhasedArraySpectrum
                                Ptr<const PhasedArrayModel> aPhasedArrayModel,
                                Ptr<const PhasedArrayModel> bPhasedArrayModel) const;
 
+    struct BeamformingStats
+    {
+        uint64_t samples = 0;
+        double sum = 0.0;
+        double min = 0.0;
+        double max = 0.0;
+        uint32_t txPorts = 0;
+        uint32_t rxPorts = 0;
+        uint32_t numRb = 0;
+    };
+
+    struct PerfStats
+    {
+        uint64_t doCalcRxPsdCalls = 0;
+        uint64_t effectiveGainFastPathCalls = 0;
+        uint64_t legacyEffectiveChannelCalls = 0;
+        double doCalcRxPsdSeconds = 0.0;
+        double psdUpdateSeconds = 0.0;
+    };
+
+    void RecordChannelGain(uint32_t srcId,
+                           uint32_t dstId,
+                           double gain,
+                           uint32_t txPorts = 0,
+                           uint32_t rxPorts = 0,
+                           uint32_t numRb = 0) const;
+
+    Ptr<const ComplexMatrixArray> GetPrecodingMatrix(
+        Ptr<const SpectrumSignalParameters> rxParams,
+        Ptr<const ComplexMatrixArray> channelMatrix) const;
+
+    bool ApplyCachedEffectiveGains(Ptr<SpectrumValue> psd,
+                                   const std::vector<double>* effectiveGains,
+                                   double& inputPsdSum,
+                                   double& outputPsdSum) const;
+
+    void ApplyLegacyEffectiveChannel(Ptr<SpectrumValue> psd,
+                                     Ptr<const ComplexMatrixArray> channelMatrix,
+                                     Ptr<const ComplexMatrixArray> precodingMatrix,
+                                     double& inputPsdSum,
+                                     double& outputPsdSum) const;
+
     Ptr<SionnaPropagationCache> m_propagationCache;
+    mutable std::map<std::pair<uint32_t, uint32_t>, BeamformingStats> m_beamformingStats;
+    mutable PerfStats m_perfStats;
 };
 
 } // namespace ns3

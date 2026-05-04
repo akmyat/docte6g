@@ -6,6 +6,8 @@
 
 #include "ns3/log.h"
 
+#include <algorithm>
+
 namespace ns3
 {
 
@@ -52,6 +54,26 @@ NrErrorModel::GetTbDecodificationStatsMimo(const std::vector<MimoSinrChunk>& sin
 
     // Create a new RB map that fits the vectorized SINR values
     auto vectorizedMap = CreateVectorizedRbMap(map, rank);
+    const auto vectorizedSinrSize = vectorizedSinr.GetValuesN();
+    const auto originalMapSize = vectorizedMap.size();
+    vectorizedMap.erase(std::remove_if(vectorizedMap.begin(),
+                                       vectorizedMap.end(),
+                                       [vectorizedSinrSize](int rbIndex) {
+                                           return rbIndex < 0 ||
+                                                  static_cast<uint32_t>(rbIndex) >=
+                                                      vectorizedSinrSize;
+                                       }),
+                        vectorizedMap.end());
+    if (vectorizedMap.size() != originalMapSize)
+    {
+        NS_LOG_WARN("Clipped vectorized MIMO RB map from "
+                    << originalMapSize << " to " << vectorizedMap.size()
+                    << " entries for SINR vector size " << vectorizedSinrSize);
+    }
+    if (vectorizedMap.empty())
+    {
+        NS_LOG_WARN("No valid RBs remain after vectorized MIMO RB clipping.");
+    }
 
     return GetTbDecodificationStats(vectorizedSinr, vectorizedMap, size, mcs, history);
 }

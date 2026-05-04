@@ -104,18 +104,24 @@ SionnaSpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(Ptr<const Spect
 
     // get small-scale fading matrix
     std::vector<std::complex<double>> H_norm = m_propagationCache->GetPropagationCSI(a, b);
-    // add trailing 1 to have same size
-    H_norm.emplace_back(1.0, 0.0);
-
-    NS_ASSERT_MSG(H_norm.size() == params->psd->GetValuesN(), "PSD and CFR must have the same size");
+    if (H_norm.empty())
+    {
+        NS_LOG_WARN("Empty Sionna CFR for link " << aId << " - " << bId
+                                                 << "; returning PSD without frequency-selective fading.");
+        return rxPsd;
+    }
 
     // apply small-scale fading
     auto vit = rxPsd->ValuesBegin(); // psd value iterator
     size_t idx = 0;
+    const size_t psdSize = params->psd->GetValuesN();
     while (vit != rxPsd->ValuesEnd())
     {
+        const size_t cfrIdx = (H_norm.size() == psdSize)
+                                  ? idx
+                                  : std::min(H_norm.size() - 1, (idx * H_norm.size()) / psdSize);
         // multiply PSD with |H|^2
-        *vit = *vit * std::norm(H_norm[idx]);
+        *vit = *vit * std::norm(H_norm[cfrIdx]);
         vit++; idx++;
     }
 

@@ -624,6 +624,15 @@ class NrSpectrumPhy : public SpectrumPhy
     void ChangeState(State newState, Time duration);
 
     /**
+     * @brief Abort any ongoing reception to allow a TDD TX to start.
+     *
+     * With non-zero propagation delay, a signal from the previous slot can
+     * still be arriving when this PHY must switch to TX. The receive state and
+     * its pending EndRx event must be cleared together.
+     */
+    void AbortCurrentRxForTddTx();
+
+    /**
      * @brief Function that is called when the transmission has ended. It is
      * used to update spectrum phy state.
      */
@@ -865,6 +874,9 @@ class NrSpectrumPhy : public SpectrumPhy
     Time m_ctrlEndTime;           //!< Needed to schedule the interference measurements CSI-IM
     EventId m_checkIfIsIdleEvent; //!< Event used to check if state should be switched from CCA_BUSY
                                   //!< to IDLE.
+    EventId m_endRxDataEvent;     //!< Scheduled EndRxData event.
+    EventId m_endRxCtrlEvent;     //!< Scheduled EndRxCtrl event.
+    EventId m_endRxSrsEvent;      //!< Scheduled EndRxSrs event.
     Time m_busyTimeEnds{
         Seconds(0)}; //!< Used to schedule switch from CCA_BUSY to IDLE, this is absolute time
 

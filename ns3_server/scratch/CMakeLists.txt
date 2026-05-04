@@ -1,4 +1,3 @@
 # Scratch programs can add nested CMakeLists.txt files here.
-add_subdirectory(sionnart-three-scenes)
-add_subdirectory(benchmark-sionnart)
-add_subdirectory(benchmark-ns3sionna)
+add_subdirectory(sionnart-nr-energy)
+add_subdirectory(benchmark_sionnart_ns3sionna)

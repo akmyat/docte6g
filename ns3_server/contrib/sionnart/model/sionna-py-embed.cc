@@ -1,12 +1,15 @@
 #include "sionna-py-embed.h"
 #include "py-embed-utils.h"
 #include "ns3/log.h"
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 #include <pybind11/complex.h>
+#include <pybind11/numpy.h>
 
 namespace py = pybind11;
 
@@ -19,6 +22,8 @@ NS_LOG_COMPONENT_DEFINE("SionnaPyEmbed");
 struct SionnaPyEmbed::Impl {
     std::unique_ptr<py::scoped_interpreter> m_interpreter;
     py::object m_sionnaInstance;
+    double m_cppPybindConversionSeconds = 0.0;
+    uint64_t m_cppPybindConversionRecords = 0;
 };
 #pragma GCC diagnostic pop
 
@@ -123,6 +128,24 @@ Vector PyListToVector(const py::list& l) {
     return Vector(l[0].cast<double>(), l[1].cast<double>(), l[2].cast<double>());
 }
 
+std::vector<double>
+PyToDoubleVector(py::handle value)
+{
+    auto array = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(value);
+    if (array)
+    {
+        auto info = array.request();
+        size_t count = 1;
+        for (const auto dim : info.shape)
+        {
+            count *= static_cast<size_t>(dim);
+        }
+        const auto* data = static_cast<const double*>(info.ptr);
+        return std::vector<double>(data, data + count);
+    }
+    return value.cast<std::vector<double>>();
+}
+
 } // anonymous namespace
 
 bool
@@ -151,7 +174,13 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
             settings["horizontal_array_spacing"] = s.horizontal_array_spacing;
         if (!s.rx_mesh.empty())
             settings["rx_mesh"] = s.rx_mesh;
-        settings["propagation_record_mode"] = s.propagation_record_mode;
+        settings["cache_threshold_buffer"] = s.cache_threshold_buffer;
+        settings["adaptive_future_horizon_seconds"] = s.adaptive_future_horizon_seconds;
+        settings["adaptive_future_min_benefit_seconds"] = s.adaptive_future_min_benefit_seconds;
+        settings["adaptive_future_max_steps"] = s.adaptive_future_max_steps;
+        settings["adaptive_future_direction_dot_threshold"] = s.adaptive_future_direction_dot_threshold;
+        settings["synthetic_array"] = s.m_syntheticArray;
+        settings["enable_fast_path"] = s.m_enableFastPath;
 
         py::list tx_names = py::cast(s.tx_names);
         py::list tx_ids   = py::cast(s.tx_ids);
@@ -203,6 +232,7 @@ SionnaPyEmbed::SionnaPerformCalculation(double current_time) {
     std::vector<SionnaPropagationData> results;
     try {
         py::list py_results = m_impl->m_sionnaInstance.attr("perform_calculation")(current_time).cast<py::list>();
+        const auto conversionStart = std::chrono::steady_clock::now();
         for (auto item : py_results) {
             py::dict d = item.cast<py::dict>();
             SionnaPropagationData data;
@@ -211,10 +241,19 @@ SionnaPyEmbed::SionnaPerformCalculation(double current_time) {
             data.delay           = d["delay"].cast<int64_t>();
             data.path_loss       = d["path_loss"].cast<double>();
             data.power           = d["power"].cast<double>();
-            data.real            = d["real"].cast<std::vector<double>>();
-            data.imag            = d["imag"].cast<std::vector<double>>();
+            data.real            = PyToDoubleVector(d["real"]);
+            data.imag            = PyToDoubleVector(d["imag"]);
             data.num_subcarriers = d["num_subcarriers"].cast<int>();
-            data.subcarrier_frequencies = d["subcarrier_frequencies"].cast<std::vector<double>>();
+            if (d.contains("mimo_real") && d.contains("mimo_imag") &&
+                d.contains("mimo_rx_elems") && d.contains("mimo_tx_elems") &&
+                d.contains("mimo_num_subcarriers")) {
+                data.mimo_real = PyToDoubleVector(d["mimo_real"]);
+                data.mimo_imag = PyToDoubleVector(d["mimo_imag"]);
+                data.mimo_rx_elems = d["mimo_rx_elems"].cast<int>();
+                data.mimo_tx_elems = d["mimo_tx_elems"].cast<int>();
+                data.mimo_num_subcarriers = d["mimo_num_subcarriers"].cast<int>();
+            }
+            data.subcarrier_frequencies = PyToDoubleVector(d["subcarrier_frequencies"]);
             data.los_exist       = d["los_exist"].cast<bool>();
             if (d.contains("tx_position") && d.contains("rx_position")) {
                 data.src_position = PyListToVector(d["tx_position"].cast<py::list>());
@@ -223,6 +262,9 @@ SionnaPyEmbed::SionnaPerformCalculation(double current_time) {
             }
             results.push_back(std::move(data));
         }
+        m_impl->m_cppPybindConversionRecords += results.size();
+        m_impl->m_cppPybindConversionSeconds +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - conversionStart).count();
     } catch (const std::exception& e) {
         NS_LOG_ERROR("SionnaPerformCalculation failed: " << e.what());
     }
@@ -237,6 +279,23 @@ SionnaPyEmbed::SionnaGetCalculationCalls() {
     } catch (...) {
         return 0;
     }
+}
+
+std::map<std::string, double>
+SionnaPyEmbed::SionnaGetPerfStats() {
+    std::map<std::string, double> stats;
+    if (!m_initialized) return stats;
+    try {
+        py::dict py_stats = m_impl->m_sionnaInstance.attr("get_perf_stats")().cast<py::dict>();
+        for (auto item : py_stats) {
+            stats[item.first.cast<std::string>()] = item.second.cast<double>();
+        }
+        stats["cpp_pybind_conversion_seconds"] = m_impl->m_cppPybindConversionSeconds;
+        stats["cpp_pybind_conversion_records"] =
+            static_cast<double>(m_impl->m_cppPybindConversionRecords);
+    } catch (...) {
+    }
+    return stats;
 }
 
 } // ns3 namespace

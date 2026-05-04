@@ -83,6 +83,14 @@ NrPmSearchFull::CreateCqiFeedbackMimo(const NrMimoSignal& rxSignalRb, PmiUpdate 
     auto optPrecForRanks = std::vector<PmCqiInfo>{};
     for (auto rank : m_ranks)
     {
+        // Skip ranks for which the codebook search did not yield a valid precoder
+        // (e.g. unsupported port counts in NrCbTypeOneSp, or empty codebook entries).
+        // Without this guard, CreateCqiForRank would dereference a null Ptr in
+        // optimized builds, where NS_ASSERT is compiled out.
+        if (!m_rankParams[rank].precParams)
+        {
+            break;
+        }
         auto cqiMsg = CreateCqiForRank(rank, rbNormChanMat);
         optPrecForRanks.emplace_back(std::move(cqiMsg));
         // Skip higher ranks when the current is incapable of maintaining the connection
@@ -94,6 +102,10 @@ NrPmSearchFull::CreateCqiFeedbackMimo(const NrMimoSignal& rxSignalRb, PmiUpdate 
             }
             break;
         }
+    }
+    if (optPrecForRanks.empty())
+    {
+        return PmCqiInfo{};
     }
 
     // Find the rank which results in largest expected TB size, and return corresponding CQI/PMI
@@ -138,7 +150,15 @@ NrPmSearchFull::UpdateAllPrecoding(const NrIntfNormChanMat& rbNormChanMat)
             optSubbandPrecoders.emplace_back(subbandParams);
         }
 
-        // Find the optimal wideband PMI i1
+        // Find the optimal wideband PMI i1. If the codebook produced no
+        // candidates for this rank (numI1 == 0, possible for unsupported port
+        // configurations), leave precParams null so callers can skip this rank
+        // instead of dereferencing the end() iterator returned by max_element.
+        if (optSubbandPrecoders.empty())
+        {
+            m_rankParams[rank].precParams = nullptr;
+            continue;
+        }
         m_rankParams[rank].precParams =
             *std::max_element(optSubbandPrecoders.begin(),
                               optSubbandPrecoders.end(),
@@ -155,9 +175,33 @@ NrPmSearchFull::UpdateSubbandPrecoding(const NrIntfNormChanMat& rbNormChanMat)
     auto sbNormChanMat = SubbandDownsampling(rbNormChanMat);
     for (auto rank : m_ranks)
     {
-        // Recompute the best subband precoding (W2) for previously found W1 and store results
+        // Recompute the best subband precoding (W2) for previously found W1 and store results.
+        // If the wideband stage has not yet produced a valid precoder for this rank
+        // (precParams still null, e.g. when a subband-only update arrives before any
+        // wideband update completed for this rank), fall back to a full wideband search
+        // for this rank to avoid a null-pointer dereference in optimized builds.
         auto& optPrec = m_rankParams[rank].precParams;
-        NS_ASSERT(optPrec);
+        if (!optPrec)
+        {
+            std::vector<Ptr<PrecMatParams>> optSubbandPrecoders{};
+            auto numI1 = m_rankParams[rank].cb->GetNumI1();
+            for (auto i1 = size_t{0}; i1 < numI1; i1++)
+            {
+                optSubbandPrecoders.emplace_back(
+                    FindOptSubbandPrecoding(sbNormChanMat, i1, rank));
+            }
+            if (optSubbandPrecoders.empty())
+            {
+                continue;
+            }
+            optPrec =
+                *std::max_element(optSubbandPrecoders.begin(),
+                                  optSubbandPrecoders.end(),
+                                  [](const Ptr<PrecMatParams>& a, const Ptr<PrecMatParams>& b) {
+                                      return a->perfMetric < b->perfMetric;
+                                  });
+            continue;
+        }
         auto wbPmi = optPrec->wbPmi;
         optPrec = FindOptSubbandPrecoding(sbNormChanMat, wbPmi, rank);
     }

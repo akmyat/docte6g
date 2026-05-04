@@ -1108,7 +1108,9 @@ NrUePhy::UlData(const std::shared_ptr<DciInfoElementTdma>& dci)
         // if there is no data for him...
         if (dci->m_type != DciInfoElementTdma::MSG3)
         {
-            NS_FATAL_ERROR("The UE " << dci->m_rnti << " has been scheduled without data");
+            NS_LOG_WARN("The UE " << dci->m_rnti
+                                  << " has been scheduled without data; dropping stale UL grant");
+            return varTtiDuration;
         }
         else
         {

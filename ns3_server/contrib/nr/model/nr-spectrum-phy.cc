@@ -18,6 +18,7 @@
 #include "ns3/node.h"
 #include "ns3/trace-source-accessor.h"
 
+#include <algorithm>
 #include <numeric>
 
 namespace ns3
@@ -819,20 +820,14 @@ NrSpectrumPhy::StartTxDataFrames(const Ptr<PacketBurst>& pb,
                                  const Time& duration)
 {
     NS_LOG_FUNCTION(this);
+    if (m_state == RX_DATA || m_state == RX_DL_CTRL || m_state == RX_UL_CTRL ||
+        m_state == RX_UL_SRS)
+    {
+        AbortCurrentRxForTddTx();
+    }
+
     switch (m_state)
     {
-    case RX_DATA:
-        /* no break */
-        [[fallthrough]];
-    case RX_DL_CTRL:
-        /* no break */
-        [[fallthrough]];
-    case RX_UL_CTRL:
-        /* no break*/
-        [[fallthrough]];
-    case RX_UL_SRS:
-        NS_FATAL_ERROR("Cannot TX while RX.");
-        break;
     case TX:
         // No break, gNB may transmit multiple times to multiple UEs
         [[fallthrough]];
@@ -895,26 +890,70 @@ NrSpectrumPhy::IsTransmitting()
 }
 
 void
+NrSpectrumPhy::AbortCurrentRxForTddTx()
+{
+    NS_LOG_WARN("Aborting delayed RX before TDD TX; state=" << m_state);
+
+    switch (m_state)
+    {
+    case RX_DATA:
+        m_interferenceData->EndRx();
+        m_endRxDataEvent.Cancel();
+        m_rxPacketBurstList.clear();
+        m_transportBlocks.clear();
+        break;
+    case RX_DL_CTRL:
+    case RX_UL_CTRL:
+        m_interferenceCtrl->EndRx();
+        m_endRxCtrlEvent.Cancel();
+        break;
+    case RX_UL_SRS:
+        if (m_interferenceSrs)
+        {
+            m_interferenceSrs->EndRx();
+        }
+        m_endRxSrsEvent.Cancel();
+        break;
+    default:
+        break;
+    }
+
+    if (m_isGnb && !m_rxControlMessageList.empty() && m_phyRxCtrlEndOkCallback)
+    {
+        NS_LOG_WARN("Forwarding delayed UL CTRL before TDD TX abort.");
+        m_phyRxCtrlEndOkCallback(m_rxControlMessageList, GetBwpId());
+    }
+
+    m_rxControlMessageList.clear();
+    m_state = IDLE;
+}
+
+void
 NrSpectrumPhy::StartTxDlControlFrames(const std::list<Ptr<NrControlMessage>>& ctrlMsgList,
                                       const Time& duration)
 {
     NS_LOG_FUNCTION(this << duration.As(Time::S));
     NS_LOG_LOGIC(this << " state: " << m_state);
+    if (m_state == RX_DATA || m_state == RX_DL_CTRL || m_state == RX_UL_CTRL ||
+        m_state == RX_UL_SRS)
+    {
+        AbortCurrentRxForTddTx();
+    }
 
     switch (m_state)
     {
     case RX_DATA:
-        /* no break */
+        [[fallthrough]];
     case RX_DL_CTRL:
-        /* no break */
+        [[fallthrough]];
     case RX_UL_CTRL:
-        /* no break*/
+        [[fallthrough]];
     case RX_UL_SRS:
-        NS_FATAL_ERROR("Cannot TX while RX.");
+        NS_FATAL_ERROR("RX state should have been aborted before DL CTRL TX.");
         break;
     case TX:
-        NS_FATAL_ERROR("Cannot TX while already TX.");
-        break;
+        NS_LOG_DEBUG("Starting DL CTRL while already transmitting.");
+        [[fallthrough]];
     case CCA_BUSY:
         NS_LOG_WARN("Start transmitting DL CTRL while in CCA_BUSY state.");
         /* no break */
@@ -953,21 +992,26 @@ NrSpectrumPhy::StartTxCsiRs(uint16_t rnti, uint16_t beamId)
     // we simulate 1ns signals for CSi-RS during DL CTRL duration,
     // the real overhead is correctly calculated in the TB size
     Time duration = NanoSeconds(1);
+    if (m_state == RX_DATA || m_state == RX_DL_CTRL || m_state == RX_UL_CTRL ||
+        m_state == RX_UL_SRS)
+    {
+        AbortCurrentRxForTddTx();
+    }
 
     switch (m_state)
     {
     case RX_DATA:
-        /* no break */
+        [[fallthrough]];
     case RX_DL_CTRL:
-        /* no break */
+        [[fallthrough]];
     case RX_UL_CTRL:
-        /* no break*/
+        [[fallthrough]];
     case RX_UL_SRS:
-        NS_FATAL_ERROR("Cannot TX while RX.");
+        NS_FATAL_ERROR("RX state should have been aborted before CSI-RS TX.");
         break;
     case TX:
-        NS_FATAL_ERROR("Cannot TX while already TX.");
-        break;
+        NS_LOG_DEBUG("Starting CSI-RS while already transmitting.");
+        [[fallthrough]];
     case CCA_BUSY:
         NS_LOG_WARN("Start transmitting CSI-RS while in CCA_BUSY state.");
         /* no break */
@@ -1001,21 +1045,26 @@ NrSpectrumPhy::StartTxUlControlFrames(const std::list<Ptr<NrControlMessage>>& ct
 {
     NS_LOG_FUNCTION(this << duration.As(Time::S));
     NS_LOG_LOGIC(this << " state: " << m_state);
+    if (m_state == RX_DATA || m_state == RX_DL_CTRL || m_state == RX_UL_CTRL ||
+        m_state == RX_UL_SRS)
+    {
+        AbortCurrentRxForTddTx();
+    }
 
     switch (m_state)
     {
     case RX_DATA:
-        /* no break */
+        [[fallthrough]];
     case RX_DL_CTRL:
-        /* no break */
+        [[fallthrough]];
     case RX_UL_CTRL:
-        /* no break */
+        [[fallthrough]];
     case RX_UL_SRS:
-        NS_FATAL_ERROR("Cannot TX while RX.");
+        NS_FATAL_ERROR("RX state should have been aborted before UL CTRL TX.");
         break;
     case TX:
-        NS_FATAL_ERROR("Cannot TX while already TX.");
-        break;
+        NS_LOG_DEBUG("Starting UL CTRL while already transmitting.");
+        [[fallthrough]];
     case CCA_BUSY:
         NS_LOG_WARN("Start transmitting UL CTRL while in CCA_BUSY state");
         /* no break */
@@ -1184,6 +1233,31 @@ NrSpectrumPhy::AddExpectedTb(ExpectedTb expectedTb)
                       "RNTI of the receiving UE must match the RNTI of the TB");
     }
 
+    if (m_rxSpectrumModel)
+    {
+        const auto numBands = m_rxSpectrumModel->GetNumBands();
+        const auto originalSize = expectedTb.m_rbBitmap.size();
+        expectedTb.m_rbBitmap.erase(
+            std::remove_if(expectedTb.m_rbBitmap.begin(),
+                           expectedTb.m_rbBitmap.end(),
+                           [numBands](int rbIndex) {
+                               return rbIndex < 0 || static_cast<uint32_t>(rbIndex) >= numBands;
+                           }),
+            expectedTb.m_rbBitmap.end());
+        if (expectedTb.m_rbBitmap.size() != originalSize)
+        {
+            NS_LOG_WARN("Clipped expected TB RB map for rnti "
+                        << expectedTb.m_rnti << " from " << originalSize << " to "
+                        << expectedTb.m_rbBitmap.size() << " RBs for spectrum size " << numBands);
+        }
+        if (expectedTb.m_rbBitmap.empty())
+        {
+            NS_LOG_WARN("Ignoring expected TB for rnti " << expectedTb.m_rnti
+                                                         << " because no valid RBs remain.");
+            return;
+        }
+    }
+
     auto it = m_transportBlocks.find(expectedTb.m_rnti);
     if (it != m_transportBlocks.end())
     {
@@ -1236,8 +1310,9 @@ NrSpectrumPhy::StartRxData(const Ptr<NrSpectrumSignalParametersDataFrame>& param
         if (m_isGnb) // I am gNB. We are here because some of my rebellious UEs is transmitting
                      // at the same time as me. -> invalid state.
         {
-            NS_FATAL_ERROR("gNB transmission overlaps in time with UE transmission. CellId:"
-                           << params->cellId);
+            NS_LOG_WARN("Dropping delayed DATA reception while gNB is transmitting. CellId:"
+                        << params->cellId);
+            return;
         }
         else // I am UE, and while I am transmitting, someone else also transmits. If we are
              // transmitting on orthogonal TX PSDs then this is most probably valid situation
@@ -1253,10 +1328,18 @@ NrSpectrumPhy::StartRxData(const Ptr<NrSpectrumSignalParametersDataFrame>& param
     case RX_DL_CTRL:
         /* no break */
     case RX_UL_CTRL:
+        if (m_isGnb)
+        {
+            m_interferenceCtrl->EndRx();
+            m_endRxCtrlEvent.Cancel();
+            ChangeState(IDLE, Seconds(0));
+            StartRxData(params);
+            return;
+        }
         /* no break */
     case RX_UL_SRS:
-        NS_FATAL_ERROR("Cannot receive DATA while receiving CTRL.");
-        break;
+        NS_LOG_WARN("Dropping delayed DATA while receiving CTRL/SRS.");
+        return;
     case CCA_BUSY:
         NS_LOG_INFO("Start receiving DATA while in CCA_BUSY state.");
         /* no break */
@@ -1275,17 +1358,23 @@ NrSpectrumPhy::StartRxData(const Ptr<NrSpectrumSignalParametersDataFrame>& param
             NS_LOG_LOGIC(this << " scheduling EndRx with delay " << params->duration.GetSeconds()
                               << "s");
 
-            Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxData, this);
+            m_endRxDataEvent = Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxData, this);
         }
         else
         {
             NS_ASSERT(m_state == RX_DATA);
-            // sanity check: if there are multiple RX events, they
-            // should occur at the same time and have the same
-            // duration, otherwise the interference calculation
-            // won't be correct
-            NS_ASSERT((m_firstRxStart == Simulator::Now()) &&
-                      (m_firstRxDuration == params->duration));
+            Time thisCompletion = Simulator::Now() + params->duration;
+            Time curCompletion = m_firstRxStart + m_firstRxDuration;
+            if (thisCompletion > curCompletion)
+            {
+                NS_LOG_DEBUG("Extending OFDMA RX window from " << curCompletion.As(Time::NS)
+                                                               << " to "
+                                                               << thisCompletion.As(Time::NS));
+                m_firstRxDuration = thisCompletion - m_firstRxStart;
+                m_endRxDataEvent.Cancel();
+                m_endRxDataEvent =
+                    Simulator::Schedule(m_firstRxDuration, &NrSpectrumPhy::EndRxData, this);
+            }
         }
 
         ChangeState(RX_DATA, params->duration);
@@ -1342,7 +1431,7 @@ NrSpectrumPhy::StartRxDlCtrl(const Ptr<NrSpectrumSignalParametersDlCtrlFrame>& p
                           << "and scheduling EndRx with delay " << params->duration);
         // store the DCIs
         m_rxControlMessageList = params->ctrlMsgList;
-        Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxCtrl, this);
+        m_endRxCtrlEvent = Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxCtrl, this);
         ChangeState(RX_DL_CTRL, params->duration);
         break;
     }
@@ -1366,14 +1455,23 @@ NrSpectrumPhy::StartRxUlCtrl(const Ptr<NrSpectrumSignalParametersUlCtrlFrame>& p
     switch (m_state)
     {
     case TX:
-        NS_FATAL_ERROR("Cannot RX UL CTRL while TX.");
-        break;
+        // Half-duplex collision: gNB is mid-TX when this UL CTRL arrives
+        // (slot-boundary edge with non-zero propagation delay). Real hardware
+        // has RX muted during TX -- drop the UL CTRL, do not abort.
+        NS_LOG_WARN("Dropping UL CTRL: gNB is in TX state (half-duplex collision).");
+        return;
     case RX_DATA:
-        NS_FATAL_ERROR("Cannot RX UL CTRL while receiving DATA.");
-        break;
+        NS_LOG_WARN("Merging delayed UL CTRL while receiving DATA.");
+        m_rxControlMessageList.insert(m_rxControlMessageList.end(),
+                                      params->ctrlMsgList.begin(),
+                                      params->ctrlMsgList.end());
+        return;
     case RX_UL_SRS:
-        NS_FATAL_ERROR("Cannot start RX UL CTRL while already receiving SRS.");
-        break;
+        // Real-radio behaviour: a UL CTRL arriving while the gNB is mid-SRS
+        // reception is a collision -- drop this UL CTRL frame and let the
+        // ongoing SRS finish, instead of aborting the simulation.
+        NS_LOG_WARN("Dropping UL CTRL: gNB is already receiving SRS (collision).");
+        return;
     case RX_DL_CTRL:
         NS_FATAL_ERROR("gNB should not be in RX_DL_CTRL state.");
         break;
@@ -1393,13 +1491,24 @@ NrSpectrumPhy::StartRxUlCtrl(const Ptr<NrSpectrumSignalParametersUlCtrlFrame>& p
             NS_LOG_LOGIC(this << " scheduling EndRx with delay " << params->duration);
             // store the DCIs
             m_rxControlMessageList = params->ctrlMsgList;
-            Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxCtrl, this);
+            m_endRxCtrlEvent =
+                Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxCtrl, this);
             ChangeState(RX_UL_CTRL, params->duration);
         }
         else // already in RX_UL_CTRL state, just add new CTRL messages from other UE
         {
-            NS_ASSERT((m_firstRxStart == Simulator::Now()) &&
-                      (m_firstRxDuration == params->duration));
+            Time thisCompletion = Simulator::Now() + params->duration;
+            Time curCompletion = m_firstRxStart + m_firstRxDuration;
+            if (thisCompletion > curCompletion)
+            {
+                NS_LOG_DEBUG("Extending UL CTRL RX window from " << curCompletion.As(Time::NS)
+                                                                 << " to "
+                                                                 << thisCompletion.As(Time::NS));
+                m_firstRxDuration = thisCompletion - m_firstRxStart;
+                m_endRxCtrlEvent.Cancel();
+                m_endRxCtrlEvent =
+                    Simulator::Schedule(m_firstRxDuration, &NrSpectrumPhy::EndRxCtrl, this);
+            }
             m_rxControlMessageList.insert(m_rxControlMessageList.end(),
                                           params->ctrlMsgList.begin(),
                                           params->ctrlMsgList.end());
@@ -1423,25 +1532,33 @@ NrSpectrumPhy::StartRxSrs(const Ptr<NrSpectrumSignalParametersUlCtrlFrame>& para
     // UL SRS signals 3) SRS should be received only one at a time, otherwise this function
     // should assert 4) CTRL message list contains only one message and that one is SRS CTRL
     // message
-    NS_ASSERT(params->cellId == GetCellId() && m_isGnb && m_state != RX_UL_SRS &&
+    NS_ASSERT(params->cellId == GetCellId() && m_isGnb &&
               params->ctrlMsgList.size() == 1 &&
               (*params->ctrlMsgList.begin())->GetMessageType() == NrControlMessage::SRS);
 
     switch (m_state)
     {
     case TX:
-        NS_FATAL_ERROR("Cannot RX SRS while TX.");
-        break;
+        // Half-duplex collision: gNB is mid-TX (DL slot) when this SRS arrives
+        // (slot-boundary edge with non-zero propagation delay). Real hardware
+        // has RX muted during TX -- drop the SRS, do not abort.
+        NS_LOG_WARN("Dropping SRS: gNB is in TX state (half-duplex collision).");
+        return;
     case RX_DATA:
-        NS_FATAL_ERROR("Cannot RX SRS while receiving DATA.");
-        break;
+        // SRS arriving mid-PUSCH is a collision; drop the SRS and let DATA finish.
+        NS_LOG_WARN("Dropping SRS: gNB is receiving DATA (collision).");
+        return;
     case RX_DL_CTRL:
         NS_FATAL_ERROR("gNB should not be in RX_DL_CTRL state.");
         break;
     case RX_UL_CTRL:
-        NS_FATAL_ERROR(
-            "gNB should not receive simultaneously non SRS and SRS uplink control signals");
-        break;
+        // SRS overlapping non-SRS UL CTRL: drop the SRS, let UL CTRL complete.
+        NS_LOG_WARN("Dropping SRS: gNB is receiving non-SRS UL CTRL (collision).");
+        return;
+    case RX_UL_SRS:
+        // Already receiving an SRS from another UE; drop this overlapping one.
+        NS_LOG_WARN("Dropping SRS: gNB is already receiving SRS (collision).");
+        return;
     case CCA_BUSY:
         NS_LOG_INFO("Start receiving UL SRS while channel in CCA_BUSY state.");
         /* no break */
@@ -1458,7 +1575,7 @@ NrSpectrumPhy::StartRxSrs(const Ptr<NrSpectrumSignalParametersUlCtrlFrame>& para
                           << params->duration);
         // store the SRS message in the CTRL message list
         m_rxControlMessageList = params->ctrlMsgList;
-        Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxSrs, this);
+        m_endRxSrsEvent = Simulator::Schedule(params->duration, &NrSpectrumPhy::EndRxSrs, this);
         ChangeState(RX_UL_SRS, params->duration);
     }
     break;
@@ -1574,6 +1691,12 @@ TransportBlockInfo::UpdatePerceivedSinr(const SpectrumValue& perceivedSinr)
     m_sinrMin = 99999999999;
     for (const auto& rbIndex : m_expected.m_rbBitmap)
     {
+        if (rbIndex < 0 || static_cast<uint32_t>(rbIndex) >= perceivedSinr.GetValuesN())
+        {
+            NS_LOG_WARN("Skipping out-of-range RB " << rbIndex << " for SINR vector size "
+                                                    << perceivedSinr.GetValuesN());
+            continue;
+        }
         m_sinrAvg += perceivedSinr.ValuesAt(rbIndex);
         if (perceivedSinr.ValuesAt(rbIndex) < m_sinrMin)
         {
@@ -1581,6 +1704,12 @@ TransportBlockInfo::UpdatePerceivedSinr(const SpectrumValue& perceivedSinr)
         }
     }
 
+    if (m_expected.m_rbBitmap.empty())
+    {
+        m_sinrAvg = 0.0;
+        m_sinrMin = 0.0;
+        return;
+    }
     m_sinrAvg = m_sinrAvg / m_expected.m_rbBitmap.size();
 
     NS_LOG_INFO("Finishing RX, sinrAvg=" << m_sinrAvg << " sinrMin=" << m_sinrMin
@@ -1594,6 +1723,35 @@ NrSpectrumPhy::CheckTransportBlockCorruptionStatus()
     {
         auto rnti = tbIt.first;
         auto& tbInfo = tbIt.second;
+
+        auto maxRb = m_sinrPerceived.GetValuesN();
+        for (const auto& chunk : m_mimoSinrPerceived)
+        {
+            if (chunk.rnti == tbInfo.m_expected.m_rnti)
+            {
+                maxRb = std::min<uint32_t>(maxRb, chunk.mimoSinr.GetNumCols());
+            }
+        }
+        const auto originalSize = tbInfo.m_expected.m_rbBitmap.size();
+        tbInfo.m_expected.m_rbBitmap.erase(
+            std::remove_if(tbInfo.m_expected.m_rbBitmap.begin(),
+                           tbInfo.m_expected.m_rbBitmap.end(),
+                           [maxRb](int rbIndex) {
+                               return rbIndex < 0 || static_cast<uint32_t>(rbIndex) >= maxRb;
+                           }),
+            tbInfo.m_expected.m_rbBitmap.end());
+        if (tbInfo.m_expected.m_rbBitmap.size() != originalSize)
+        {
+            NS_LOG_WARN("Clipped TB RB map for rnti "
+                        << tbInfo.m_expected.m_rnti << " from " << originalSize << " to "
+                        << tbInfo.m_expected.m_rbBitmap.size() << " RBs for SINR size " << maxRb);
+        }
+        if (tbInfo.m_expected.m_rbBitmap.empty())
+        {
+            NS_LOG_WARN("Skipping TB for rnti " << tbInfo.m_expected.m_rnti
+                                                << " because no valid RBs remain.");
+            continue;
+        }
 
         tbInfo.UpdatePerceivedSinr(m_sinrPerceived);
 

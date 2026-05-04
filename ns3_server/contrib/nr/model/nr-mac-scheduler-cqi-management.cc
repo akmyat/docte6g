@@ -38,7 +38,7 @@ NrMacSchedulerCQIManagement::UlSBCQIReported(
     ueInfo->m_ulCqi.m_cqiType = NrMacSchedulerUeInfo::CqiInfo::SB;
     ueInfo->m_ulCqi.m_timer = expirationTime;
 
-    std::vector<int> rbAssignment(params.m_ulCqi.m_sinr.size(), 0);
+    std::vector<int> rbAssignment(model->GetNumBands(), 0);
 
     for (uint32_t i = 0; i < rbgMask.size(); ++i)
     {
@@ -46,7 +46,11 @@ NrMacSchedulerCQIManagement::UlSBCQIReported(
         {
             for (uint32_t k = 0; k < numRbPerRbg; ++k)
             {
-                rbAssignment[i * numRbPerRbg + k] = 1;
+                const uint32_t rbIndex = i * numRbPerRbg + k;
+                if (rbIndex < rbAssignment.size())
+                {
+                    rbAssignment[rbIndex] = 1;
+                }
             }
         }
     }
@@ -59,7 +63,7 @@ NrMacSchedulerCQIManagement::UlSBCQIReported(
     for (uint32_t ichunk = 0; ichunk < model->GetNumBands(); ichunk++)
     {
         NS_ASSERT(specIt != specVals.ValuesEnd());
-        if (rbAssignment[ichunk] == 1)
+        if (rbAssignment[ichunk] == 1 && ichunk < ueInfo->m_ulCqi.m_sinr.size())
         {
             *specIt = ueInfo->m_ulCqi.m_sinr.at(ichunk);
             out << ueInfo->m_ulCqi.m_sinr.at(ichunk) << " ";

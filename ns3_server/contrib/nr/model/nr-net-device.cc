@@ -246,7 +246,15 @@ NrNetDevice::Receive(Ptr<Packet> p)
     }
     else
     {
-        NS_ABORT_MSG("Unknown IP type");
+        // Reassembled SDU is not a valid IPv4 or IPv6 packet. This typically
+        // happens when the RLC UM t-Reordering timer expires with missing
+        // segments and ReassembleAndDeliver concatenates non-contiguous
+        // PDUs into a malformed payload. Treat it as a corrupted frame and
+        // drop it (mirrors real-hardware behavior) instead of aborting the
+        // entire simulation.
+        NS_LOG_WARN("Dropping " << p->GetSize() << " bytes on " << m_macaddress
+                                 << ": malformed payload (likely RLC UM partial reassembly).");
+        m_dropTrace(p);
     }
 }
 

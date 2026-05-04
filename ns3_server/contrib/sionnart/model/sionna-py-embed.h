@@ -3,6 +3,7 @@
 
 #include "ns3/vector.h"
 #include <complex>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -19,6 +20,11 @@ struct SionnaPropagationData {
     bool los_exist;
     std::vector<double> real;
     std::vector<double> imag;
+    std::vector<double> mimo_real;
+    std::vector<double> mimo_imag;
+    int mimo_rx_elems = 0;
+    int mimo_tx_elems = 0;
+    int mimo_num_subcarriers = 0;
     std::vector<double> subcarrier_frequencies;
     Vector src_position;
     Vector dst_position;
@@ -38,7 +44,7 @@ struct SionnaInitSettings {
     int rx_num_cols = 2;
     double vertical_array_spacing   = 0.0; // 0 → wavelength/2
     double horizontal_array_spacing = 0.0;
-    std::string pattern      = "tr38901";
+    std::string pattern      = "iso";
     std::string polarization = "VH";
 
     std::vector<std::string> tx_names;
@@ -52,7 +58,13 @@ struct SionnaInitSettings {
 
     std::string rx_mesh; // path to .ply file; empty → use default
     std::vector<double> rx_speed; // m/s per receiver; empty → not passed
-    std::string propagation_record_mode = "future_records";
+    double cache_threshold_buffer = 1.1;
+    double adaptive_future_horizon_seconds = 3.0;
+    double adaptive_future_min_benefit_seconds = 1.0;
+    int adaptive_future_max_steps = 3;
+    double adaptive_future_direction_dot_threshold = 0.7;
+    bool m_syntheticArray = true;
+    bool m_enableFastPath = true;
 };
 
 class SionnaPyEmbed {
@@ -66,6 +78,7 @@ class SionnaPyEmbed {
         bool SionnaUpdatePosition(const std::string& name, const Vector& position);
         std::vector<SionnaPropagationData> SionnaPerformCalculation(double current_time = 0.0);
         int  SionnaGetCalculationCalls();
+        std::map<std::string, double> SionnaGetPerfStats();
 
     private:
         SionnaPyEmbed();

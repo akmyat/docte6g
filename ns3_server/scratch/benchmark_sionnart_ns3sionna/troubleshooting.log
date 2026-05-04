@@ -1,0 +1,8 @@
+ninja: no work to do.
+ns3sionna benchmark: 1 AP + 32 STAs
+  regime=high_mob_high_load mob=1 speed=7 pktinterval=20ms sim=10s caching=1 env=free_space/free_space.xml
+Env: free_space/free_space.xml
+ns3sionna configured with fc= 5200MHz, B=60MHz, FFT=768, Evo model:position, MinTc=1000ms
+ns3sionna configured for mode: 2, submode: 16
+ns3sionna: trying to connect to sionna via tcp://localhost:5555
+ns3sionna: connection ... OK

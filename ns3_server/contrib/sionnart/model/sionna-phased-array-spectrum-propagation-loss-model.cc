@@ -19,6 +19,7 @@
 
 
 #include "sionna-phased-array-spectrum-propagation-loss-model.h"
+#include "sionna-mobility-model.h"
 
 #include <ns3/double.h>
 #include <ns3/log.h>
@@ -29,6 +30,12 @@
 #include <ns3/string.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <complex>
+#include <fstream>
+#include <limits>
+#include <numeric>
 
 namespace ns3
 {
@@ -36,6 +43,31 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("SionnaPhasedArraySpectrumPropagationLossModel");
 
 NS_OBJECT_ENSURE_REGISTERED(SionnaPhasedArraySpectrumPropagationLossModel);
+
+namespace
+{
+double
+ElapsedSeconds(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+bool
+IsSameSionnaRole(Ptr<const MobilityModel> a, Ptr<const MobilityModel> b)
+{
+    Ptr<const SionnaMobilityModel> mmA = DynamicCast<const SionnaMobilityModel>(a);
+    Ptr<const SionnaMobilityModel> mmB = DynamicCast<const SionnaMobilityModel>(b);
+    if (!mmA || !mmB)
+    {
+        return false;
+    }
+
+    const std::string nameA = mmA->GetObjectName();
+    const std::string nameB = mmB->GetObjectName();
+    return (nameA.find("Tx") != std::string::npos && nameB.find("Tx") != std::string::npos) ||
+           (nameA.find("Rx") != std::string::npos && nameB.find("Rx") != std::string::npos);
+}
+} // namespace
 
 SionnaPhasedArraySpectrumPropagationLossModel::SionnaPhasedArraySpectrumPropagationLossModel()
 {
@@ -50,12 +82,149 @@ SionnaPhasedArraySpectrumPropagationLossModel::~SionnaPhasedArraySpectrumPropaga
 void
 SionnaPhasedArraySpectrumPropagationLossModel::DoDispose()
 {
+    m_propagationCache = nullptr;
+    m_beamformingStats.clear();
+    PhasedArraySpectrumPropagationLossModel::DoDispose();
 }
 
 void
 SionnaPhasedArraySpectrumPropagationLossModel::SetPropagationCache(Ptr<SionnaPropagationCache> propagationCache)
 {
     m_propagationCache = propagationCache;
+}
+
+void
+SionnaPhasedArraySpectrumPropagationLossModel::RecordChannelGain(uint32_t srcId,
+                                                                 uint32_t dstId,
+                                                                 double gain,
+                                                                 uint32_t txPorts,
+                                                                 uint32_t rxPorts,
+                                                                 uint32_t numRb) const
+{
+    auto& stats = m_beamformingStats[std::make_pair(srcId, dstId)];
+    if (stats.samples == 0)
+    {
+        stats.min = gain;
+        stats.max = gain;
+    }
+    else
+    {
+        stats.min = std::min(stats.min, gain);
+        stats.max = std::max(stats.max, gain);
+    }
+    ++stats.samples;
+    stats.sum += gain;
+    if (txPorts > 0)
+    {
+        stats.txPorts = txPorts;
+    }
+    if (rxPorts > 0)
+    {
+        stats.rxPorts = rxPorts;
+    }
+    if (numRb > 0)
+    {
+        stats.numRb = numRb;
+    }
+}
+
+uint64_t
+SionnaPhasedArraySpectrumPropagationLossModel::GetBeamformingSampleCount() const
+{
+    uint64_t samples = 0;
+    for (const auto& [_, stats] : m_beamformingStats)
+    {
+        samples += stats.samples;
+    }
+    return samples;
+}
+
+double
+SionnaPhasedArraySpectrumPropagationLossModel::GetAverageBeamformingGain() const
+{
+    uint64_t samples = 0;
+    double sum = 0.0;
+    for (const auto& [_, stats] : m_beamformingStats)
+    {
+        samples += stats.samples;
+        sum += stats.sum;
+    }
+    return samples > 0 ? sum / static_cast<double>(samples) : 0.0;
+}
+
+double
+SionnaPhasedArraySpectrumPropagationLossModel::GetMinBeamformingGain() const
+{
+    double value = std::numeric_limits<double>::infinity();
+    for (const auto& [_, stats] : m_beamformingStats)
+    {
+        if (stats.samples > 0)
+        {
+            value = std::min(value, stats.min);
+        }
+    }
+    return std::isfinite(value) ? value : 0.0;
+}
+
+double
+SionnaPhasedArraySpectrumPropagationLossModel::GetMaxBeamformingGain() const
+{
+    double value = 0.0;
+    for (const auto& [_, stats] : m_beamformingStats)
+    {
+        if (stats.samples > 0)
+        {
+            value = std::max(value, stats.max);
+        }
+    }
+    return value;
+}
+
+void
+SionnaPhasedArraySpectrumPropagationLossModel::ExportMimoChannelGainStats(
+    const std::string& path) const
+{
+    std::ofstream f(path);
+    if (!f.is_open())
+    {
+        return;
+    }
+
+    auto toDb = [](double gain) {
+        return gain > 0.0 ? 10.0 * std::log10(gain) : -std::numeric_limits<double>::infinity();
+    };
+
+    f << "SrcId,DstId,Samples,TxPorts,RxPorts,NumRb,"
+         "AvgEffectiveChannelGainLinear,MinEffectiveChannelGainLinear,"
+         "MaxEffectiveChannelGainLinear,AvgEffectiveChannelGain_dB,"
+         "MinEffectiveChannelGain_dB,MaxEffectiveChannelGain_dB\n";
+    for (const auto& [link, stats] : m_beamformingStats)
+    {
+        if (stats.samples == 0)
+        {
+            continue;
+        }
+        const double avg = stats.sum / static_cast<double>(stats.samples);
+        f << link.first << "," << link.second << ","
+          << stats.samples << ","
+          << stats.txPorts << ","
+          << stats.rxPorts << ","
+          << stats.numRb << ","
+          << avg << "," << stats.min << "," << stats.max << ","
+          << toDb(avg) << "," << toDb(stats.min) << "," << toDb(stats.max) << "\n";
+    }
+}
+
+void
+SionnaPhasedArraySpectrumPropagationLossModel::AppendPerfStats(std::ostream& os) const
+{
+    os << "phased_model,do_calc_rx_psd_calls," << m_perfStats.doCalcRxPsdCalls << "\n";
+    os << "phased_model,do_calc_rx_psd_seconds," << m_perfStats.doCalcRxPsdSeconds << "\n";
+    os << "phased_model,effective_gain_fast_path_calls,"
+       << m_perfStats.effectiveGainFastPathCalls << "\n";
+    os << "phased_model,legacy_effective_channel_calls,"
+       << m_perfStats.legacyEffectiveChannelCalls << "\n";
+    os << "phased_model,psd_update_seconds," << m_perfStats.psdUpdateSeconds << "\n";
 }
 
 TypeId
@@ -139,6 +308,83 @@ SionnaPhasedArraySpectrumPropagationLossModel::CalcBeamformingGain(
     return gain;
 }
 
+Ptr<const ComplexMatrixArray>
+SionnaPhasedArraySpectrumPropagationLossModel::GetPrecodingMatrix(
+    Ptr<const SpectrumSignalParameters> rxParams,
+    Ptr<const ComplexMatrixArray> channelMatrix) const
+{
+    if (rxParams->precodingMatrix)
+    {
+        return rxParams->precodingMatrix;
+    }
+
+    ComplexMatrixArray page(channelMatrix->GetNumCols(), 1, 1);
+    const auto defaultWeight =
+        std::complex<double>(1.0 / std::sqrt(channelMatrix->GetNumCols()), 0.0);
+    for (size_t row = 0; row < channelMatrix->GetNumCols(); ++row)
+    {
+        page.Elem(row, 0, 0) = defaultWeight;
+    }
+    return Create<const ComplexMatrixArray>(page);
+}
+
+bool
+SionnaPhasedArraySpectrumPropagationLossModel::ApplyCachedEffectiveGains(
+    Ptr<SpectrumValue> psd,
+    const std::vector<double>* effectiveGains,
+    double& inputPsdSum,
+    double& outputPsdSum) const
+{
+    if (!effectiveGains || effectiveGains->size() != psd->GetValuesN())
+    {
+        return false;
+    }
+
+    inputPsdSum = 0.0;
+    outputPsdSum = 0.0;
+    for (uint32_t rbIdx = 0; rbIdx < psd->GetValuesN(); ++rbIdx)
+    {
+        const double input = (*psd)[rbIdx];
+        const double output = input * (*effectiveGains)[rbIdx];
+        inputPsdSum += input;
+        outputPsdSum += output;
+        (*psd)[rbIdx] = output;
+    }
+    return true;
+}
+
+void
+SionnaPhasedArraySpectrumPropagationLossModel::ApplyLegacyEffectiveChannel(
+    Ptr<SpectrumValue> psd,
+    Ptr<const ComplexMatrixArray> channelMatrix,
+    Ptr<const ComplexMatrixArray> precodingMatrix,
+    double& inputPsdSum,
+    double& outputPsdSum) const
+{
+    inputPsdSum = std::accumulate(psd->ConstValuesBegin(), psd->ConstValuesEnd(), 0.0);
+
+    for (uint32_t rbIdx = 0; rbIdx < psd->GetValuesN(); ++rbIdx)
+    {
+        (*psd)[rbIdx] = 0.0;
+        const uint32_t precodingRb = (precodingMatrix->GetNumPages() == 1) ? 0 : rbIdx;
+        for (size_t rxPort = 0; rxPort < channelMatrix->GetNumRows(); ++rxPort)
+        {
+            for (size_t txStream = 0; txStream < precodingMatrix->GetNumCols(); ++txStream)
+            {
+                std::complex<double> effectiveChannel(0.0, 0.0);
+                for (size_t txPort = 0; txPort < channelMatrix->GetNumCols(); ++txPort)
+                {
+                    effectiveChannel += (*channelMatrix)(rxPort, txPort, rbIdx) *
+                                        (*precodingMatrix)(txPort, txStream, precodingRb);
+                }
+                (*psd)[rbIdx] += std::norm(effectiveChannel);
+            }
+        }
+    }
+
+    outputPsdSum = std::accumulate(psd->ConstValuesBegin(), psd->ConstValuesEnd(), 0.0);
+}
+
 Ptr<SpectrumSignalParameters>
 SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
     Ptr<const SpectrumSignalParameters> params,
@@ -148,6 +394,8 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
     Ptr<const PhasedArrayModel> bPhasedArrayModel) const
 {
     NS_LOG_FUNCTION(this);
+    const auto calcStart = std::chrono::steady_clock::now();
+    ++m_perfStats.doCalcRxPsdCalls;
     uint32_t aId = a->GetObject<Node>()->GetId(); // Id of the node a
     uint32_t bId = b->GetObject<Node>()->GetId(); // Id of the node b
 
@@ -168,26 +416,100 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
     // Retrieve FTR params from table
     //FtrParams ftrParams = GetFtrParameters(a, b);
 
-    // get small-scale fading matrix
-    std::vector<std::complex<double>> H_norm = m_propagationCache->GetPropagationCSI(a, b);
-    // todo: apply
-
-    auto vit = rxParams->psd->ValuesBegin();      // psd iterator
-    //auto sbit = tempPsd->ConstBandsBegin(); // band iterator
-    int cnt = 0;
-    while (vit != rxParams->psd->ValuesEnd())
+    if (IsSameSionnaRole(a, b))
     {
-        cnt++;
-        vit++;
+        m_perfStats.doCalcRxPsdSeconds += ElapsedSeconds(calcStart);
+        return rxParams;
     }
-    std::cout << cnt << std::endl;
 
-    // Compute the beamforming gain
-    double bfGain = 1.0; //CalcBeamformingGain(a, b, aPhasedArrayModel, bPhasedArrayModel);
+    if (m_propagationCache)
+    {
+        Ptr<const ComplexMatrixArray> channelMatrix =
+            m_propagationCache->GetSpectrumChannelMatrix(a,
+                                                         b,
+                                                         aPhasedArrayModel,
+                                                         bPhasedArrayModel,
+                                                         rxParams->psd);
+        if (channelMatrix)
+        {
+            rxParams->spectrumChannelMatrix = channelMatrix;
+            Ptr<const ComplexMatrixArray> precodingMatrix =
+                GetPrecodingMatrix(rxParams, channelMatrix);
 
+            const auto psdStart = std::chrono::steady_clock::now();
+            const std::vector<double>* effectiveGains =
+                m_propagationCache->GetEffectiveChannelGain(a,
+                                                            b,
+                                                            aPhasedArrayModel,
+                                                            bPhasedArrayModel,
+                                                            precodingMatrix,
+                                                            rxParams->psd->GetValuesN());
+
+            double inputPsdSum = 0.0;
+            double outputPsdSum = 0.0;
+            if (ApplyCachedEffectiveGains(rxParams->psd,
+                                          effectiveGains,
+                                          inputPsdSum,
+                                          outputPsdSum))
+            {
+                ++m_perfStats.effectiveGainFastPathCalls;
+            }
+            else
+            {
+                ++m_perfStats.legacyEffectiveChannelCalls;
+                ApplyLegacyEffectiveChannel(rxParams->psd,
+                                            channelMatrix,
+                                            precodingMatrix,
+                                            inputPsdSum,
+                                            outputPsdSum);
+            }
+            m_perfStats.psdUpdateSeconds += ElapsedSeconds(psdStart);
+            if (inputPsdSum > 0.0 && outputPsdSum > 0.0 && std::isfinite(outputPsdSum))
+            {
+                RecordChannelGain(aId,
+                                  bId,
+                                  outputPsdSum / inputPsdSum,
+                                  static_cast<uint32_t>(channelMatrix->GetNumCols()),
+                                  static_cast<uint32_t>(channelMatrix->GetNumRows()),
+                                  static_cast<uint32_t>(channelMatrix->GetNumPages()));
+            }
+            m_perfStats.doCalcRxPsdSeconds += ElapsedSeconds(calcStart);
+            return rxParams;
+        }
+    }
+
+    double bfGain = CalcBeamformingGain(a, b, aPhasedArrayModel, bPhasedArrayModel);
+    if (!std::isfinite(bfGain))
+    {
+        NS_LOG_WARN("Non-finite Sionna beamforming gain on link " << aId << " -> " << bId
+                                                                  << "; using unity gain.");
+        bfGain = 1.0;
+    }
+    bfGain = std::max(0.0, bfGain);
     // Apply the above terms to the TX PSD
-    *(rxParams->psd) *= (1.0 * bfGain);
+    *(rxParams->psd) *= bfGain;
 
+    if (m_propagationCache)
+    {
+        const std::vector<std::complex<double>>& cfr = m_propagationCache->GetPropagationCSIRef(a, b);
+        if (!cfr.empty())
+        {
+            auto vit = rxParams->psd->ValuesBegin();
+            size_t idx = 0;
+            const size_t psdSize = rxParams->psd->GetValuesN();
+            while (vit != rxParams->psd->ValuesEnd())
+            {
+                const size_t cfrIdx = (cfr.size() == psdSize)
+                                          ? idx
+                                          : std::min(cfr.size() - 1, (idx * cfr.size()) / psdSize);
+                *vit *= std::norm(cfr[cfrIdx]);
+                ++vit;
+                ++idx;
+            }
+        }
+    }
+
+    m_perfStats.doCalcRxPsdSeconds += ElapsedSeconds(calcStart);
     return rxParams;
 }
 

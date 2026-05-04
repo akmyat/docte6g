@@ -75,7 +75,7 @@ SionnaMobilityModel::GetTypeId(void) {
                                             MakeBoxChecker())
                             .AddAttribute("UpdateInterval",
                                             "Interval for checking position/waypoint status.",
-                                            TimeValue(Seconds(0.5)),
+                                            TimeValue(MilliSeconds(100)),
                                             MakeTimeAccessor(&SionnaMobilityModel::m_updateInterval),
                                             MakeTimeChecker())
                             .AddTraceSource("PositionUpdate",

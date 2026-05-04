@@ -967,7 +967,11 @@ NrMacSchedulerNs3::DoSchedUlCqiInfoReq(
                                            << static_cast<uint32_t>(symStart));
 
         auto itAlloc = m_ulAllocationMap.find(ulSfnSf.GetEncoding());
-        NS_ASSERT_MSG(itAlloc != m_ulAllocationMap.end(), "Can't find allocation for " << ulSfnSf);
+        if (itAlloc == m_ulAllocationMap.end())
+        {
+            NS_LOG_WARN("Ignoring UL CQI for " << ulSfnSf << " because no matching UL allocation exists");
+            return;
+        }
         std::vector<AllocElem>& ulAllocations = itAlloc->second.m_ulAllocations;
 
         for (auto it = ulAllocations.cbegin(); it != ulAllocations.cend(); /* NO INC */)
@@ -976,9 +980,12 @@ NrMacSchedulerNs3::DoSchedUlCqiInfoReq(
             if (allocation.m_symStart == symStart)
             {
                 auto itUe = m_ueMap.find(allocation.m_rnti);
-                NS_ASSERT(itUe != m_ueMap.end());
-                NS_ASSERT(allocation.m_numSym > 0);
-                NS_ASSERT(allocation.m_tbs > 0);
+                if (itUe == m_ueMap.end() || allocation.m_numSym == 0 || allocation.m_tbs == 0)
+                {
+                    NS_LOG_WARN("Ignoring invalid UL CQI allocation for RNTI " << allocation.m_rnti);
+                    it = ulAllocations.erase(it);
+                    continue;
+                }
 
                 m_cqiManagement.UlSBCQIReported(expirationTime,
                                                 allocation.m_tbs,
