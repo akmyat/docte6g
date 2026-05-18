@@ -33,7 +33,7 @@ REGIMES="stationary_high_load,low_mob_low_load,high_mob_high_load"
 MAX_STAS=32
 SIM_SECONDS=9
 ZMQ_URL="tcp://localhost:5555"
-ASSETS_ROOT="/home/aung/code/new_docte6g/assets"
+ASSETS_ROOT="/home/aung/code/docte6g/assets"
 AUTO_SERVER=1   # auto-start ns3sionna ZMQ server when ns3sionna is in BACKENDS
 
 while [[ $# -gt 0 ]]; do
@@ -55,6 +55,15 @@ done
 # (server.sh activates 6Gold internally for the ZMQ server; doesn't affect this shell.)
 # shellcheck disable=SC1090
 source "${CONDA_SH}" && conda activate 6G
+
+# sionnart embeds Python via pybind11::scoped_interpreter, which doesn't set
+# PyConfig.home — libpython falls back to compile-time defaults and can't
+# locate the conda env's stdlib (manifests as "PyCapsule_Import datetime" on
+# numpy import). We pass the active env's prefix to the benchmark binary
+# *per-invocation* (not via a global export) so it doesn't leak into
+# server.sh, which activates a different conda env (6Gold, Python 3.10) and
+# would otherwise crash with "No module named 'encodings'".
+SIONNART_PYTHONHOME="${CONDA_PREFIX:-/home/aung/anaconda3/envs/6G}"
 
 # Auto-start ns3sionna ZMQ server if needed
 if [[ ",${BACKENDS}," == *",ns3sionna,"* ]] && [[ "${AUTO_SERVER}" == "1" ]]; then
@@ -85,8 +94,16 @@ backend_extra_args() {
 }
 
 if [[ ! -f "${RESULTS_CSV}" ]]; then
-    echo "backend,regime,num_stas,wall_clock_s,sim_mem_usage_mib,peak_util_percent" > "${RESULTS_CSV}"
+    echo "backend,regime,num_stas,wall_clock_s,sim_mem_usage_mib,peak_util_percent,mean_util_percent,peak_power_w,peak_sm_clock_mhz" > "${RESULTS_CSV}"
 fi
+# Schema notes:
+#  - util/memory are per-process (filtered to the benchmark binary).
+#  - peak_power_w / peak_sm_clock_mhz are GPU-wide (only the benchmark uses
+#    the GPU on this box). They exist because on Hopper/Blackwell hardware
+#    `utilization.gpu` undercounts short kernel bursts — power draw and SM
+#    clock are far more honest signals (idle ~3.7 W / 214 MHz; busy spikes
+#    to 10+ W / 2400 MHz even when util.gpu is still reporting 0).
+#  - Old rows written under the prior schema are not directly comparable.
 
 cd "${NS3_DIR}"
 
@@ -117,50 +134,138 @@ for backend in "${BACKEND_LIST[@]}"; do
                 n=$(( n * 2 ))
                 continue
             fi
-            # Start GPU monitoring in background
-            TMP_GPU_FILE=$(mktemp)
-            # Capture baseline compute memory
-            base_mem=$(nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
-            echo "${base_mem} 0" > "${TMP_GPU_FILE}"
+            # Start per-process GPU monitoring in background, filtered by the
+            # *PID* of the actual benchmark process (not by command name, which
+            # nvidia-smi truncates to 15 chars and which doesn't match the
+            # ns3.<ver>-<binary>-<profile> on-disk name anyway).
+            #
+            # We don't know the PID until ./ns3 run has spawned the child, so
+            # the samplers poll `pgrep -f` for the binary basename until they
+            # see one, then start filtering nvidia-smi output.
+            #
+            #   1) pmon -s u -d 1   -> per-process SM util at 1 Hz (driver min)
+            #   2) query-compute-apps loop @ 0.5 s -> per-process FB memory MiB
+            TMP_PMON_FILE=$(mktemp)
+            TMP_UTIL_FILE=$(mktemp)
+            TMP_MEM_FILE=$(mktemp)
+            TMP_PIDS_FILE=$(mktemp)
+
+            # Backend-specific list of pgrep patterns. For ns3sionna the GPU
+            # work happens in the persistent ZMQ Python server, not in the
+            # benchmark binary itself, so we must include the server's
+            # process pattern. Otherwise sim_mem_usage stays 0.
+            #
+            # We report *peak resident GPU memory* across this PID set
+            # (no baseline subtraction): for sionnart that's the per-run
+            # allocation (~465 MiB); for ns3sionna it's the server's loaded
+            # model + simulation state (~2 GiB) — which is the GPU footprint
+            # an operator cares about. Subtracting a baseline would drop
+            # ns3sionna to ~0 because the server pre-allocates once at
+            # startup and reuses buffers, so per-run delta is negligible
+            # even though the backend actively occupies the GPU.
+            case "${backend}" in
+                ns3sionna) target_patterns=("${binary}" "ns3sionna_server.py") ;;
+                sionnart)  target_patterns=("${binary}") ;;
+                pure_ns3)  target_patterns=("${binary}") ;;
+                *)         target_patterns=("${binary}") ;;
+            esac
+
+            # Per-process SM util at 1 Hz (driver minimum) — used for the
+            # *mean* utilization, which is per-process-attributed.
+            nvidia-smi pmon -d 1 -s u -c 100000 > "${TMP_PMON_FILE}" 2>/dev/null &
+            PMON_PID=$!
+
+            # GPU-wide telemetry at 10 Hz. We capture utilization.gpu *and*
+            # power.draw + clocks.current.sm because on Hopper/Blackwell the
+            # util.gpu metric is sampled too coarsely to register short kernel
+            # bursts (idle util can read 0 while SM clock jumps to boost and
+            # power draw triples). Power and clock are honest signals; util
+            # is kept for backwards-compat with the old schema.
+            nvidia-smi --query-gpu=utilization.gpu,power.draw,clocks.current.sm \
+                       --format=csv,noheader,nounits --loop-ms=100 \
+                       > "${TMP_UTIL_FILE}" 2>/dev/null &
+            UTIL_PID=$!
+
+            # Persist target_patterns into a file so the background subshell
+            # can read them without inheriting an array.
+            TMP_PATTERNS_FILE=$(mktemp)
+            printf '%s\n' "${target_patterns[@]}" > "${TMP_PATTERNS_FILE}"
+
             (
-                peak_mem=${base_mem}
-                peak_util=0
                 while true; do
-                    # Get utilization
-                    curr_util=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo 0)
-                    # Get compute app memory (summed)
-                    curr_mem=$(nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
-                    
-                    # Handle non-numeric or empty output
-                    [[ "$curr_util" =~ ^[0-9.]+$ ]] || curr_util=0
-                    
-                    # Update peaks
-                    if (( $(echo "$curr_mem > $peak_mem" | bc -l 2>/dev/null || [ "$curr_mem" -gt "$peak_mem" ]) )); then peak_mem=$curr_mem; fi
-                    if (( $(echo "$curr_util > $peak_util" | bc -l 2>/dev/null || [ "$curr_util" -gt "$peak_util" ]) )); then peak_util=$curr_util; fi
-                    
-                    echo "${peak_mem} ${peak_util}" > "${TMP_GPU_FILE}"
+                    # Union of live PIDs matching any target pattern, persisted
+                    # so brief children aren't lost between samples.
+                    while IFS= read -r pat; do
+                        [[ -z "${pat}" ]] && continue
+                        pgrep -f "${pat}" 2>/dev/null >> "${TMP_PIDS_FILE}" || true
+                    done < "${TMP_PATTERNS_FILE}"
+                    seen_pids=$(sort -u "${TMP_PIDS_FILE}" | tr '\n' '|' | sed 's/|$//')
+                    if [[ -n "${seen_pids}" ]]; then
+                        nvidia-smi --query-compute-apps=pid,used_memory \
+                            --format=csv,noheader,nounits 2>/dev/null \
+                            | awk -F',' -v pids="${seen_pids}" '
+                                BEGIN { n=split(pids, arr, "|"); for (i=1;i<=n;i++) want[arr[i]]=1 }
+                                { gsub(/^[ \t]+|[ \t]+$/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $2) }
+                                ($1 in want) { sum += $2+0 }
+                                END { print sum+0 }
+                              ' >> "${TMP_MEM_FILE}"
+                    else
+                        echo 0 >> "${TMP_MEM_FILE}"
+                    fi
                     sleep 0.5
                 done
             ) &
-            MONITOR_PID=$!
+            MEM_PID=$!
 
-            log="$(./ns3 run "${cmd}" 2>&1)" || {
-                kill "${MONITOR_PID}" || true
-                rm -f "${TMP_GPU_FILE}"
-                echo "    ERROR (rc=$?), skipping. Last 20 lines:"
+            # Only sionnart needs PYTHONHOME (it embeds Python). For ns3sionna
+            # / pure_ns3, leaving PYTHONHOME unset is critical so unrelated
+            # subprocesses (e.g. the ns3sionna ZMQ server, which uses a
+            # different conda env) aren't broken by a stale PYTHONHOME.
+            run_rc=0
+            if [[ "${backend}" == "sionnart" ]]; then
+                log="$(env "PYTHONHOME=${SIONNART_PYTHONHOME}" ./ns3 run "${cmd}" 2>&1)" || run_rc=$?
+            else
+                log="$(env -u PYTHONHOME ./ns3 run "${cmd}" 2>&1)" || run_rc=$?
+            fi
+            if [[ "${run_rc}" -ne 0 ]]; then
+                kill "${PMON_PID}" "${UTIL_PID}" "${MEM_PID}" 2>/dev/null || true
+                wait "${PMON_PID}" "${UTIL_PID}" "${MEM_PID}" 2>/dev/null || true
+                rm -f "${TMP_PMON_FILE}" "${TMP_UTIL_FILE}" "${TMP_MEM_FILE}" "${TMP_PIDS_FILE}" "${TMP_PATTERNS_FILE}"
+                echo "    ERROR (rc=${run_rc}), skipping. Last 20 lines:"
                 echo "${log}" | tail -20 | sed 's/^/      /'
                 n=$(( n * 2 ))
                 continue
-            }
+            fi
 
-            kill "${MONITOR_PID}" || true
-            read -r peak_mem peak_util < "${TMP_GPU_FILE}"
-            rm -f "${TMP_GPU_FILE}"
+            kill "${PMON_PID}" "${UTIL_PID}" "${MEM_PID}" 2>/dev/null || true
+            wait "${PMON_PID}" "${UTIL_PID}" "${MEM_PID}" 2>/dev/null || true
 
-            # Calculate simulation usage (delta)
-            sim_mem_usage=$(echo "${peak_mem} - ${base_mem}" | bc)
-            # Ensure it's not negative (can happen if another app closes during run)
-            if (( $(echo "${sim_mem_usage} < 0" | bc -l) )); then sim_mem_usage=0; fi
+            # Peak from the 10 Hz GPU-wide sampler. Columns: util%, power_W, sm_MHz.
+            # awk uses ", " as field separator (csv format from nvidia-smi).
+            peak_util=$(awk -F', *' 'BEGIN{p=0} NF>=3 && $1 ~ /^[0-9.]+$/ { if ($1+0 > p) p=$1+0 } END{print p+0}' "${TMP_UTIL_FILE}")
+            peak_power=$(awk -F', *' 'BEGIN{p=0} NF>=3 && $2 ~ /^[0-9.]+$/ { if ($2+0 > p) p=$2+0 } END{printf "%.2f", p}' "${TMP_UTIL_FILE}")
+            peak_sm_clock=$(awk -F', *' 'BEGIN{p=0} NF>=3 && $3 ~ /^[0-9.]+$/ { if ($3+0 > p) p=$3+0 } END{print p+0}' "${TMP_UTIL_FILE}")
+
+            # Mean from pmon (per-process attribution; excludes idle GPU time
+            # before the benchmark process attached and any unrelated GPU
+            # activity from other PIDs).
+            # pmon -s u columns: "# gpu  pid  type  sm  mem  enc  dec  command"
+            seen_pids=$(sort -u "${TMP_PIDS_FILE}" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+
+            mean_util=$(awk -v pids="${seen_pids}" '
+                BEGIN { n=split(pids, arr, ","); for (i=1;i<=n;i++) want[arr[i]]=1 }
+                /^#/ { next }
+                ($2 in want) { sum += $4+0; cnt++ }
+                END { if (cnt > 0) printf "%.2f", sum/cnt; else print "0.00" }
+            ' "${TMP_PMON_FILE}")
+
+            # Peak resident GPU memory (MiB) summed across the backend's PID
+            # set during the run. Reported as-is, with no baseline subtracted:
+            # this is the GPU footprint the backend actively occupies, which
+            # is what we want to compare across backends.
+            sim_mem_usage=$(awk 'BEGIN{m=0} {if ($1+0 > m) m=$1+0} END{print m+0}' "${TMP_MEM_FILE}")
+
+            rm -f "${TMP_PMON_FILE}" "${TMP_UTIL_FILE}" "${TMP_MEM_FILE}" "${TMP_PIDS_FILE}" "${TMP_PATTERNS_FILE}"
 
             result_line="$(echo "${log}" | grep '^RESULT ' | tail -1 || true)"
             if [[ -z "${result_line}" ]]; then
@@ -170,8 +275,19 @@ for backend in "${BACKEND_LIST[@]}"; do
             fi
 
             wall=$(echo "${result_line}" | sed -n 's/.*wall_clock_s=\([0-9.eE+-]*\).*/\1/p')
-            echo "    wall_clock_s=${wall} | sim_mem_usage=${sim_mem_usage} MiB | peak_util=${peak_util}%"
-            echo "${backend},${regime},${n},${wall},${sim_mem_usage},${peak_util}" >> "${RESULTS_CSV}"
+
+            # The binaries print wall_clock_s=-1 when their RunSimulation()
+            # bails out (e.g., SionnaInitialize failed). Don't record garbage:
+            # surface the last 30 stderr lines so the operator sees the cause.
+            if awk "BEGIN{exit !(${wall} <= 0)}"; then
+                echo "    sim returned wall_clock_s=${wall} (failure sentinel). Last 30 lines:"
+                echo "${log}" | tail -30 | sed 's/^/      /'
+                n=$(( n * 2 ))
+                continue
+            fi
+
+            echo "    wall_clock_s=${wall} | sim_mem_usage=${sim_mem_usage} MiB | peak_util=${peak_util}% | mean_util=${mean_util}% | peak_power=${peak_power} W | peak_sm_clock=${peak_sm_clock} MHz"
+            echo "${backend},${regime},${n},${wall},${sim_mem_usage},${peak_util},${mean_util},${peak_power},${peak_sm_clock}" >> "${RESULTS_CSV}"
 
             n=$(( n * 2 ))
         done

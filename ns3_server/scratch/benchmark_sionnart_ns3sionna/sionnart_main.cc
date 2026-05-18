@@ -121,14 +121,14 @@ RunSimulation(const std::string& assetsRoot, uint32_t numStas,
 
     MobilityHelper mobility;
     mobility.SetMobilityModel("ns3::SionnaMobilityModel",
-                              "ObjectPath", StringValue(assetsRoot + "/objects/cube.obj"));
+                              "ObjectPath", StringValue(assetsRoot + "/objects/cube/cube.obj"));
     if (mobile_scenario)
     {
         mobility.Install(wifiApNode);
         mobility.SetMobilityModel("ns3::SionnaMobilityModel",
                                   "Mode", EnumValue(SionnaMobilityModel::RANDOM_WALK),
                                   "Speed", DoubleValue(mobile_speed),
-                                  "ObjectPath", StringValue(assetsRoot + "/objects/cube.obj"));
+                                  "ObjectPath", StringValue(assetsRoot + "/objects/cube/cube.obj"));
         mobility.Install(wifiStaNodes);
     }
     else
@@ -217,6 +217,9 @@ RunSimulation(const std::string& assetsRoot, uint32_t numStas,
 
     SionnaInitSettings settings;
     settings.scene              = assetsRoot + "/scenes/free_space/free_space.xml";
+    // Pin rx_mesh to assetsRoot too. Without this, sionnart.py falls back to a
+    // path derived from its own __file__ location, which doesn't track --assetsRoot.
+    settings.rx_mesh            = assetsRoot + "/objects/cube/cube.obj";
     settings.carrier_frequency  = fc;
     settings.subcarrier_spacing = 78125.0;
     settings.num_subcarriers    = 256;
