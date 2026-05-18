@@ -19,7 +19,7 @@ plt.rcParams['figure.figsize'] = (14, 6)
 
 # Load Data Cell
 cell_load_data = """
-results_dir = '/home/aung/code/new_docte6g/results'
+results_dir = '/home/aung/code/docte6g/results/nr-energy-experiment-2'
 scenarios = ['free_space', 'urban_macro', 'urban_micro']
 
 flow_data_list = []
@@ -117,18 +117,50 @@ else:
         ('Jitter_ms', 'Jitter (ms)')
     ]
     directions = ['DL', 'UL']
-    antenna_order = ['2x2', '4x4', '8x8']
+    hue_order = ['2x2 (ns3)', '2x2 (sionna)', '4x4 (ns3)', '4x4 (sionna)', '8x8 (ns3)', '8x8 (sionna)']
+    default_colors = sns.color_palette("deep", 3)
+    custom_palette = [
+        default_colors[0], default_colors[0],
+        default_colors[1], default_colors[1],
+        default_colors[2], default_colors[2]
+    ]
+    
     fig, axes = plt.subplots(len(metrics), 2, figsize=(16, 5 * len(metrics)))
     for i, (metric_col, metric_label) in enumerate(metrics):
         for j, direction in enumerate(directions):
             ax = axes[i, j]
-            df_plot = df_flow_plot[df_flow_plot['Direction'] == direction]
+            df_plot = df_flow_plot[df_flow_plot['Direction'] == direction].copy()
             if df_plot.empty:
                 ax.set_title(f'{{selected_scenario}} {{direction}}: No Data')
                 continue
-            sns.barplot(data=df_plot, x='Application', y=metric_col, hue='Antenna', 
-                        hue_order=antenna_order, errorbar=None, ax=ax)
-            ax.set_title(f'{{selected_scenario}} {{direction}}: {{metric_label}} by Application')
+            
+            # Combine Antenna and Simulator for grouped bar plot
+            df_plot['Antenna_Simulator'] = df_plot['Antenna'] + ' (' + df_plot['Simulator'] + ')'
+            
+            sns.barplot(data=df_plot, x='Application', y=metric_col, hue='Antenna_Simulator', 
+                        hue_order=hue_order, palette=custom_palette, errorbar=None, ax=ax)
+            
+            # Apply hatches to distinguish Simulators
+            for idx, container in enumerate(ax.containers):
+                if idx < len(hue_order):
+                    label = hue_order[idx]
+                    hatch = '//' if 'sionna' in label or 'sionnart' in label else ''
+                    for patch in container:
+                        patch.set_hatch(hatch)
+            
+            # Apply hatches to legend
+            legend = ax.get_legend()
+            if legend is not None:
+                handles = getattr(legend, 'legend_handles', None)
+                if handles is None:
+                    handles = getattr(legend, 'legendHandles', [])
+                for idx, handle in enumerate(handles):
+                    if idx < len(hue_order):
+                        label = hue_order[idx]
+                        if 'sionna' in label or 'sionnart' in label:
+                            handle.set_hatch('//')
+            
+            ax.set_title(f'{{selected_scenario}} {{direction}}: {{metric_label}} by Application (Hatched = Sionna)')
             ax.set_ylabel(metric_label)
     plt.tight_layout()
     plt.show()
@@ -148,19 +180,79 @@ else:
     ]
     antenna_order = ['2x2', '4x4', '8x8']
     load_order = ['low', 'medium', 'high']
+    
+    hue_order_load = ['low (ns3)', 'low (sionna)', 'medium (ns3)', 'medium (sionna)', 'high (ns3)', 'high (sionna)']
+    hue_order_ant = ['2x2 (ns3)', '2x2 (sionna)', '4x4 (ns3)', '4x4 (sionna)', '8x8 (ns3)', '8x8 (sionna)']
+    
+    default_colors = sns.color_palette("deep", 3)
+    custom_palette = [
+        default_colors[0], default_colors[0],
+        default_colors[1], default_colors[1],
+        default_colors[2], default_colors[2]
+    ]
 
     fig, axes = plt.subplots(len(metrics), 2, figsize=(18, 5 * len(metrics)))
 
     for i, (metric_col, metric_label) in enumerate(metrics):
-        # Plot by Antenna Size
-        sns.barplot(data=df_energy_scenario, x='Antenna', y=metric_col, order=antenna_order, 
-                    hue='Load', hue_order=load_order, errorbar=None, ax=axes[i, 0])
-        axes[i, 0].set_title(f'{{selected_scenario.replace("_", " ").title()}}: {{metric_label}} by Antenna Size')
+        # Combined load and simulator column
+        df_energy_scenario['Load_Simulator'] = df_energy_scenario['Load'] + ' (' + df_energy_scenario['Simulator'] + ')'
         
-        # Plot by Traffic Load
+        # Plot 1: by Antenna Size (hue is Load + Simulator)
+        ax1 = axes[i, 0]
+        sns.barplot(data=df_energy_scenario, x='Antenna', y=metric_col, order=antenna_order, 
+                    hue='Load_Simulator', hue_order=hue_order_load, palette=custom_palette, errorbar=None, ax=ax1)
+        
+        # Apply hatches to distinguish Simulators in Plot 1
+        for idx, container in enumerate(ax1.containers):
+            if idx < len(hue_order_load):
+                label = hue_order_load[idx]
+                hatch = '//' if 'sionna' in label or 'sionnart' in label else ''
+                for patch in container:
+                    patch.set_hatch(hatch)
+        
+        # Apply hatches to legend of Plot 1
+        legend1 = ax1.get_legend()
+        if legend1 is not None:
+            handles = getattr(legend1, 'legend_handles', None)
+            if handles is None:
+                handles = getattr(legend1, 'legendHandles', [])
+            for idx, handle in enumerate(handles):
+                if idx < len(hue_order_load):
+                    label = hue_order_load[idx]
+                    if 'sionna' in label or 'sionnart' in label:
+                        handle.set_hatch('//')
+                        
+        ax1.set_title(f'{{selected_scenario.replace("_", " ").title()}}: {{metric_label}} by Antenna Size (Hatched = Sionna)')
+        
+        # Combined antenna and simulator column
+        df_energy_scenario['Antenna_Simulator'] = df_energy_scenario['Antenna'] + ' (' + df_energy_scenario['Simulator'] + ')'
+        
+        # Plot 2: by Traffic Load (hue is Antenna + Simulator)
+        ax2 = axes[i, 1]
         sns.barplot(data=df_energy_scenario, x='Load', y=metric_col, order=load_order, 
-                    hue='Antenna', hue_order=antenna_order, errorbar=None, ax=axes[i, 1])
-        axes[i, 1].set_title(f'{{selected_scenario.replace("_", " ").title()}}: {{metric_label}} by Traffic Load')
+                    hue='Antenna_Simulator', hue_order=hue_order_ant, palette=custom_palette, errorbar=None, ax=ax2)
+        
+        # Apply hatches to distinguish Simulators in Plot 2
+        for idx, container in enumerate(ax2.containers):
+            if idx < len(hue_order_ant):
+                label = hue_order_ant[idx]
+                hatch = '//' if 'sionna' in label or 'sionnart' in label else ''
+                for patch in container:
+                    patch.set_hatch(hatch)
+                    
+        # Apply hatches to legend of Plot 2
+        legend2 = ax2.get_legend()
+        if legend2 is not None:
+            handles = getattr(legend2, 'legend_handles', None)
+            if handles is None:
+                handles = getattr(legend2, 'legendHandles', [])
+            for idx, handle in enumerate(handles):
+                if idx < len(hue_order_ant):
+                    label = hue_order_ant[idx]
+                    if 'sionna' in label or 'sionnart' in label:
+                        handle.set_hatch('//')
+                        
+        ax2.set_title(f'{{selected_scenario.replace("_", " ").title()}}: {{metric_label}} by Traffic Load (Hatched = Sionna)')
 
     plt.tight_layout()
     plt.show()
@@ -182,8 +274,20 @@ else:
         ('EstimatedRxPower_dBm', 'Average Rx Power (dBm)')
     ]
     antenna_order = ['2x2', '4x4', '8x8']
+    
+    hue_order_ant = ['2x2 (ns3)', '2x2 (sionna)', '4x4 (ns3)', '4x4 (sionna)', '8x8 (ns3)', '8x8 (sionna)']
+    default_colors = sns.color_palette("deep", 3)
+    custom_palette = [
+        default_colors[0], default_colors[0],
+        default_colors[1], default_colors[1],
+        default_colors[2], default_colors[2]
+    ]
+    
     fig, axes = plt.subplots(3, 2, figsize=(16, 15))
     axes_flat = axes.flatten()
+    
+    # Combined antenna and simulator column
+    df_prop_plot['Antenna_Simulator'] = df_prop_plot['Antenna'] + ' (' + df_prop_plot['Simulator'] + ')'
     
     for i, (metric_col, metric_label) in enumerate(metrics):
         ax = axes_flat[i]
@@ -198,7 +302,7 @@ else:
         if metric_col == 'EstimatedRxPower_dBm':
             # Horizontal orientation for Rx Power
             sns.barplot(data=df_prop_plot, y='Antenna', x=metric_col, order=antenna_order, 
-                        hue='Antenna', hue_order=antenna_order, palette='deep', legend=False, errorbar=None, ax=ax)
+                        hue='Antenna_Simulator', hue_order=hue_order_ant, palette=custom_palette, errorbar=None, ax=ax)
             ax.set_xlabel(metric_label)
             ax.set_ylabel('Antenna Size')
             if not data_values.empty:
@@ -206,13 +310,33 @@ else:
         else:
             # Vertical orientation for others
             sns.barplot(data=df_prop_plot, x='Antenna', y=metric_col, order=antenna_order, 
-                        hue='Antenna', hue_order=antenna_order, palette='deep', legend=False, errorbar=None, ax=ax)
+                        hue='Antenna_Simulator', hue_order=hue_order_ant, palette=custom_palette, errorbar=None, ax=ax)
             ax.set_ylabel(metric_label)
             ax.set_xlabel('Antenna Size')
             if not data_values.empty:
                 ax.set_ylim(v_min - padding, v_max + padding)
                 
-        ax.set_title(f'{{selected_scenario.replace("_", " ").title()}}: {{metric_label}}')
+        # Apply hatches to distinguish Simulators
+        for idx, container in enumerate(ax.containers):
+            if idx < len(hue_order_ant):
+                label = hue_order_ant[idx]
+                hatch = '//' if 'sionna' in label or 'sionnart' in label else ''
+                for patch in container:
+                    patch.set_hatch(hatch)
+                    
+        # Apply hatches to legend
+        legend = ax.get_legend()
+        if legend is not None:
+            handles = getattr(legend, 'legend_handles', None)
+            if handles is None:
+                handles = getattr(legend, 'legendHandles', [])
+            for idx, handle in enumerate(handles):
+                if idx < len(hue_order_ant):
+                    label = hue_order_ant[idx]
+                    if 'sionna' in label or 'sionnart' in label:
+                        handle.set_hatch('//')
+                        
+        ax.set_title(f'{{selected_scenario.replace("_", " ").title()}}: {{metric_label}} (Hatched = Sionna)')
     
     # Hide the empty 6th subplot
     if len(metrics) < len(axes_flat):
@@ -231,23 +355,55 @@ metrics = [
     ('MeanMcs', 'Average MCS'),
     ('EstimatedRxPower_dBm', 'Average Rx Power (dBm)')
 ]
-antenna_order = ['2x2', '4x4', '8x8']
+
+hue_order_ant = ['2x2 (ns3)', '2x2 (sionna)', '4x4 (ns3)', '4x4 (sionna)', '8x8 (ns3)', '8x8 (sionna)']
+default_colors = sns.color_palette("deep", 3)
+custom_palette = [
+    default_colors[0], default_colors[0],
+    default_colors[1], default_colors[1],
+    default_colors[2], default_colors[2]
+]
+
 fig, axes = plt.subplots(3, 2, figsize=(16, 15))
 axes_flat = axes.flatten()
+
+# Combined antenna and simulator column
+df_prop_nodes['Antenna_Simulator'] = df_prop_nodes['Antenna'] + ' (' + df_prop_nodes['Simulator'] + ')'
 
 for i, (metric_col, metric_label) in enumerate(metrics):
     ax = axes_flat[i]
     if metric_col == 'EstimatedRxPower_dBm':
-        sns.barplot(data=df_prop_nodes, y='Scenario', x=metric_col, hue='Antenna', 
-                    hue_order=antenna_order, errorbar=None, ax=ax)
+        sns.barplot(data=df_prop_nodes, y='Scenario', x=metric_col, hue='Antenna_Simulator', 
+                    hue_order=hue_order_ant, palette=custom_palette, errorbar=None, ax=ax)
         ax.set_xlabel(metric_label)
         ax.set_ylabel('Scenario')
     else:
-        sns.barplot(data=df_prop_nodes, x='Scenario', y=metric_col, hue='Antenna', 
-                    hue_order=antenna_order, errorbar=None, ax=ax)
+        sns.barplot(data=df_prop_nodes, x='Scenario', y=metric_col, hue='Antenna_Simulator', 
+                    hue_order=hue_order_ant, palette=custom_palette, errorbar=None, ax=ax)
         ax.set_ylabel(metric_label)
         ax.set_xlabel('Scenario')
-    ax.set_title(f'Comparison: {metric_label}')
+        
+    # Apply hatches to distinguish Simulators
+    for idx, container in enumerate(ax.containers):
+        if idx < len(hue_order_ant):
+            label = hue_order_ant[idx]
+            hatch = '//' if 'sionna' in label or 'sionnart' in label else ''
+            for patch in container:
+                patch.set_hatch(hatch)
+                
+    # Apply hatches to legend
+    legend = ax.get_legend()
+    if legend is not None:
+        handles = getattr(legend, 'legend_handles', None)
+        if handles is None:
+            handles = getattr(legend, 'legendHandles', [])
+        for idx, handle in enumerate(handles):
+            if idx < len(hue_order_ant):
+                label = hue_order_ant[idx]
+                if 'sionna' in label or 'sionnart' in label:
+                    handle.set_hatch('//')
+                    
+    ax.set_title(f'Comparison: {metric_label} (Hatched = Sionna)')
 
 # Hide the empty 6th subplot
 if len(metrics) < len(axes_flat):
@@ -283,7 +439,7 @@ for scenario in scenarios:
 
 nb['cells'] = cells
 
-with open('/home/aung/code/new_docte6g/results/analysis_report.ipynb', 'w') as f:
+with open('/home/aung/code/docte6g/results/nr-energy-experiment-2/analysis_report.ipynb', 'w') as f:
     nbf.write(nb, f)
 
 print("Notebook successfully updated: Propagation plots changed to 3x2 layout.")
