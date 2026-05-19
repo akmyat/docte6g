@@ -10,10 +10,452 @@ for _variant in ("cuda_ad_mono_polarized", "cuda_ad_rgb", "llvm_ad_rgb"):
 else:
     raise ImportError(f"No supported Mitsuba variant found. Available variants: {mi.variants()}")
 
+import drjit as dr
 from sionna.rt import load_scene, PlanarArray, Transmitter, Receiver
 from sionna.rt import PathSolver, subcarrier_frequencies, InteractionType
-from sionna.rt import RadioMaterial, SceneObject
+from sionna.rt import RadioMaterial, SceneObject, AntennaPattern
+from sionna.rt.antenna_pattern import antenna_pattern_registry
+from sionna.rt.utils import r_hat
 from sionna.phy import SPEED_OF_LIGHT
+
+_ISAC_AVAILABLE = True
+try:
+    from sklearn.cluster import DBSCAN
+    from scipy.optimize import linear_sum_assignment
+    from scipy.spatial import cKDTree
+except ImportError:
+    _ISAC_AVAILABLE = False
+    DBSCAN = None
+    linear_sum_assignment = None
+    cKDTree = None
+
+
+# ------------------- START of ISAC helpers -------------------
+class KalmanFilter3D:
+    def __init__(self, initial_state, dt=1.0):
+        self.x = np.array([initial_state[0], initial_state[1], initial_state[2],
+                           0.0, 0.0, 0.0]).reshape(6, 1)
+        self.start_pos = np.asarray(initial_state, dtype=float).copy()
+        self.F = np.eye(6)
+        self.F[0, 3] = dt; self.F[1, 4] = dt; self.F[2, 5] = dt
+        self.H = np.zeros((3, 6))
+        self.H[0, 0] = 1; self.H[1, 1] = 1; self.H[2, 2] = 1
+        self.P = np.eye(6) * 5.0
+        self.Q = np.eye(6) * 0.1
+        self.R = np.eye(3) * 1.0
+        self.missed_frames = 0
+        self.age = 1
+        self._confirmed = False
+
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.x[:3].flatten()
+
+    def update(self, z):
+        z = np.array(z).reshape(3, 1)
+        y = z - (self.H @ self.x)
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        self.x = self.x + (K @ y)
+        self.P = (np.eye(6) - K @ self.H) @ self.P
+        self.missed_frames = 0
+        self.age += 1
+        return self.x[:3].flatten()
+
+    def get_total_displacement(self):
+        return float(np.linalg.norm(self.x[:3].flatten() - self.start_pos))
+
+    def is_confirmed(self, min_age, min_dist):
+        if not self._confirmed:
+            if self.age >= min_age and self.get_total_displacement() > min_dist:
+                self._confirmed = True
+        return self._confirmed
+
+
+class Tracker:
+    def __init__(self, max_missed=3, min_age_for_output=3, min_displacement=0.3, max_tracks=10):
+        self.tracks = []
+        self.max_missed = max_missed
+        self.min_age = min_age_for_output
+        self.min_dist = min_displacement
+        self.max_tracks = max_tracks
+
+    def process_frame(self, detections):
+        predictions = [t.predict() for t in self.tracks]
+        unmatched = set(range(len(detections)))
+
+        if self.tracks and detections:
+            cost = np.zeros((len(self.tracks), len(detections)))
+            for i, p in enumerate(predictions):
+                for j, d in enumerate(detections):
+                    cost[i, j] = np.linalg.norm(p - d['position'])
+            MAX_COST = 10.0
+            cost[cost > MAX_COST] = 1000.0
+            row_ind, col_ind = linear_sum_assignment(cost)
+            for i, j in zip(row_ind, col_ind):
+                if cost[i, j] < MAX_COST:
+                    self.tracks[i].update(detections[j]['position'])
+                    unmatched.discard(j)
+                else:
+                    self.tracks[i].missed_frames += 1
+            unassigned = set(range(len(self.tracks))) - set(row_ind)
+            for i in unassigned:
+                self.tracks[i].missed_frames += 1
+        elif self.tracks:
+            for t in self.tracks:
+                t.missed_frames += 1
+
+        for j in unmatched:
+            if len(self.tracks) < self.max_tracks:
+                self.tracks.append(KalmanFilter3D(detections[j]['position']))
+
+        self.tracks = [t for t in self.tracks if t.missed_frames < self.max_missed]
+
+        moving = []
+        for t in self.tracks:
+            if t.is_confirmed(self.min_age, self.min_dist):
+                moving.append(t.x[:3].flatten())
+        return moving
+
+
+class CloudMTI:
+    def __init__(self, dist_thresh=0.5):
+        self.dist_thresh = dist_thresh
+        self.background_map = None
+        self._primed = False
+
+    def prime(self, erp_pts):
+        """Seed the static-background map from a target-free warm-up frame.
+
+        Multiple calls accumulate background points so several warm-up frames
+        can be combined before any moving target enters the scene.
+        """
+        if len(erp_pts) == 0:
+            return
+        if self.background_map is None:
+            self.background_map = np.asarray(erp_pts).copy()
+        else:
+            self.background_map = np.vstack([self.background_map, np.asarray(erp_pts)])
+        self._primed = True
+
+    def filter(self, erp_pts, powers):
+        if len(erp_pts) == 0:
+            return erp_pts, powers
+        if self.background_map is None:
+            # Not explicitly primed — capture this frame as the background but
+            # *also* pass it through so the first frame is not silently dropped.
+            # Subsequent frames will be MTI-filtered normally.
+            self.background_map = erp_pts.copy()
+            return erp_pts, powers
+        tree = cKDTree(self.background_map)
+        dists, _ = tree.query(erp_pts)
+        mask = dists > self.dist_thresh
+        return erp_pts[mask], powers[mask]
+
+
+def _extract_erps(paths_obj, gnb_pos, min_power=1e-25,
+                  z_min=0.0, z_max=2.0,
+                  single_bounce_only=True, phase_center_offset=0.0):
+    """Extract raw ERP points and powers from a Sionna paths object.
+
+    Returns (ERP, powers) arrays after bounce filter, power gate, and z-gate.
+    Does NOT apply MTI or DBSCAN — use this to collect ERPs from multiple
+    monostatic solves before merging and clustering.
+    """
+    try:
+        a = np.array(paths_obj.a)
+        tau = np.array(paths_obj.tau)
+        theta_r = np.array(paths_obj.theta_r)
+        phi_r = np.array(paths_obj.phi_r)
+        powers = np.mean(np.abs(a) ** 2, axis=tuple(range(a.ndim - 1)))
+        tau = np.mean(tau, axis=tuple(range(tau.ndim - 1)))
+        theta_r = np.mean(theta_r, axis=tuple(range(theta_r.ndim - 1)))
+        phi_r = np.mean(phi_r, axis=tuple(range(phi_r.ndim - 1)))
+    except Exception:
+        return np.empty((0, 3)), np.empty(0)
+
+    bounces = None
+    try:
+        inter = np.array(paths_obj.interactions)
+        if inter.ndim >= 2:
+            depth = inter.shape[0]
+            num_paths_inter = inter.shape[-1]
+            flat = inter.reshape(depth, -1, num_paths_inter)
+            mask = flat != int(InteractionType.NONE)
+            bounces = mask.any(axis=1).sum(axis=0)
+    except Exception:
+        bounces = None
+
+    valid = tau > 1e-9
+    if single_bounce_only and bounces is not None and bounces.shape == tau.shape:
+        valid &= (bounces == 1)
+    tau, powers = tau[valid], powers[valid]
+    theta_r, phi_r = theta_r[valid], phi_r[valid]
+    if len(tau) == 0:
+        return np.empty((0, 3)), np.empty(0)
+
+    p_gNB = np.array(gnb_pos).flatten()[:3]
+    L = SPEED_OF_LIGHT * tau
+    distance_scaling = np.maximum(L / 10.0, 1.0) ** 1.1
+    dynamic_threshold = min_power / distance_scaling
+    vp = powers > dynamic_threshold
+    tau, powers, L = tau[vp], powers[vp], L[vp]
+    theta_r, phi_r = theta_r[vp], phi_r[vp]
+    if len(tau) == 0:
+        return np.empty((0, 3)), np.empty(0)
+
+    d_dir = np.stack((np.sin(theta_r) * np.cos(phi_r),
+                      np.sin(theta_r) * np.sin(phi_r),
+                      np.cos(theta_r)), axis=-1)
+    ERP = p_gNB + ((L[:, np.newaxis] / 2.0) + float(phase_center_offset)) * d_dir
+    vz = (ERP[:, 2] >= z_min) & (ERP[:, 2] <= z_max)
+    return ERP[vz], powers[vz]
+
+
+def detect_objects_realistic_noisy(paths_obj, gnb_pos, min_power=1e-25,
+                                   eps_cluster=2.0, max_targets=10,
+                                   z_min=0.0, z_max=2.0, mti_filter=None,
+                                   single_bounce_only=True,
+                                   phase_center_offset=0.0):
+    """Cluster ray-traced echo paths into target detections.
+
+    ``single_bounce_only`` keeps only paths whose echo has exactly one
+    scatter interaction. The monostatic ERP geometry ``p_gNB + (L/2) * d_dir``
+    is only correct for such paths; longer paths localise the *last*
+    scatterer, not the target, and contribute spurious clusters.
+
+    ``phase_center_offset`` (metres) is an optional radial bias applied to
+    every ERP. Set explicitly during sensor calibration; do not use as a
+    free fitting parameter.
+    """
+    try:
+        a = np.array(paths_obj.a)
+        tau = np.array(paths_obj.tau)
+        theta_r = np.array(paths_obj.theta_r)
+        phi_r = np.array(paths_obj.phi_r)
+        powers = np.mean(np.abs(a) ** 2, axis=tuple(range(a.ndim - 1)))
+        tau = np.mean(tau, axis=tuple(range(tau.ndim - 1)))
+        theta_r = np.mean(theta_r, axis=tuple(range(theta_r.ndim - 1)))
+        phi_r = np.mean(phi_r, axis=tuple(range(phi_r.ndim - 1)))
+    except Exception:
+        return []
+
+    # Per-path bounce count from the interactions tensor. Sionna exposes a
+    # shape (max_depth, ..., num_paths) integer array of InteractionType
+    # values where NONE marks unused depth slots. Counting non-NONE entries
+    # along the depth axis gives the number of scatter interactions for
+    # each path. We collapse any intermediate (rx, tx) axes by taking the
+    # max — for a path that exists on any link it suffices that any link
+    # observes the interaction.
+    bounces = None
+    try:
+        inter = np.array(paths_obj.interactions)
+        if inter.ndim >= 2:
+            depth = inter.shape[0]
+            num_paths_inter = inter.shape[-1]
+            flat = inter.reshape(depth, -1, num_paths_inter)
+            mask = flat != int(InteractionType.NONE)
+            bounces = mask.any(axis=1).sum(axis=0)  # shape (num_paths,)
+    except Exception:
+        bounces = None
+
+    valid = (tau > 1e-9)
+    if single_bounce_only and bounces is not None and bounces.shape == tau.shape:
+        valid &= (bounces == 1)
+    tau, powers = tau[valid], powers[valid]
+    theta_r, phi_r = theta_r[valid], phi_r[valid]
+    if len(tau) == 0:
+        return []
+
+    p_gNB = np.array(gnb_pos).flatten()[:3]
+    L = SPEED_OF_LIGHT * tau
+    distance_scaling = np.maximum(L / 10.0, 1.0) ** 1.1
+    dynamic_threshold = min_power / distance_scaling
+    vp = powers > dynamic_threshold
+    tau, powers = tau[vp], powers[vp]
+    theta_r, phi_r = theta_r[vp], phi_r[vp]
+    L = L[vp]
+    if len(tau) == 0:
+        return []
+
+    d_dir = np.stack((np.sin(theta_r) * np.cos(phi_r),
+                      np.sin(theta_r) * np.sin(phi_r),
+                      np.cos(theta_r)), axis=-1)
+    ERP = p_gNB + ((L[:, np.newaxis] / 2.0) + float(phase_center_offset)) * d_dir
+    vz = (ERP[:, 2] >= z_min) & (ERP[:, 2] <= z_max)
+    ERP = ERP[vz]
+    powers = powers[vz]
+
+    if mti_filter is not None:
+        ERP_dyn, powers_dyn = mti_filter.filter(ERP, powers)
+    else:
+        ERP_dyn, powers_dyn = ERP, powers
+
+    if len(ERP_dyn) == 0:
+        return []
+
+    labels = DBSCAN(eps=eps_cluster, min_samples=2).fit(ERP_dyn).labels_
+    ids = sorted(set(labels) - {-1})
+    raw = []
+    for k in ids:
+        m = labels == k
+        best_idx = np.argmax(powers_dyn[m])
+        raw.append({"position": ERP_dyn[m][best_idx],
+                    "power": float(powers_dyn[m].sum())})
+    raw.sort(key=lambda x: x['power'], reverse=True)
+    if max_targets:
+        raw = raw[:max_targets]
+    return [{"id": i, "position": r['position'], "power": r['power']}
+            for i, r in enumerate(raw)]
+
+
+def _read_ply_bbox(fname_ply):
+    with open(fname_ply, 'rb') as f:
+        n_verts, n_props, fmt = 0, 0, ""
+        for _ in range(2048):  # cap header scan to avoid infinite loops on non-PLY files
+            raw = f.readline()
+            if not raw:
+                raise ValueError(f"{fname_ply}: not a PLY file (no end_header)")
+            try:
+                ln = raw.decode('ascii', errors='replace').strip()
+            except Exception:
+                raise ValueError(f"{fname_ply}: header is not ASCII")
+            if "end_header" in ln:
+                break
+            if "element vertex" in ln:
+                n_verts = int(ln.split()[-1])
+            if "property float" in ln:
+                n_props += 1
+            if "format" in ln:
+                fmt = ln
+        else:
+            raise ValueError(f"{fname_ply}: PLY header exceeds 2048 lines")
+        if "ascii" in fmt:
+            verts = np.loadtxt(f, max_rows=n_verts)
+        else:
+            verts = np.frombuffer(f.read(n_verts * n_props * 4),
+                                  dtype='f4').reshape(n_verts, n_props)
+    xyz = verts[:, :3]
+    return xyz.min(axis=0), xyz.max(axis=0)
+
+
+def calibrate_detect_objects(fname_ply, scene_object=None, obj_z_override=None):
+    bbox_min, bbox_max = _read_ply_bbox(fname_ply)
+    size_model = (bbox_max - bbox_min).astype(float)
+    unit_scale = 0.01 if size_model.max() > 10.0 else 1.0
+    size_world = size_model * unit_scale
+    if scene_object is not None:
+        try:
+            size_world = size_model * np.abs(np.array(scene_object.scale).flatten())
+        except Exception:
+            pass
+    dx, dy, dz = size_world
+    footprint_r = 0.5 * np.sqrt(dx ** 2 + dy ** 2)
+    eps_cluster = max(2.0 * footprint_r, 1.5)
+    if obj_z_override is not None:
+        obj_z = float(obj_z_override)
+    elif scene_object is not None:
+        try:
+            obj_z = float(np.array(scene_object.position).flatten()[2])
+        except Exception:
+            obj_z = float(bbox_min[2] * unit_scale)
+    else:
+        obj_z = float(bbox_min[2] * unit_scale)
+    margin = dz * 0.5 + 0.5
+    return {
+        "eps_cluster": float(eps_cluster),
+        "z_min": float(obj_z - margin),
+        "z_max": float(obj_z + dz + margin),
+        "min_power": float(1e-25),
+        "bbox_size": size_world,
+    }
+# ------------------- END of ISAC helpers -------------------
+
+
+# ------------------- START of Beamforming helpers -------------------
+_ACTIVE_PATTERN = None
+_PATTERN_REGISTERED = False
+
+
+class BeamformingPattern(AntennaPattern):
+    """Multi-lobe antenna pattern that steers Gaussian beams toward detected targets."""
+
+    def __init__(self, target_angles, width_deg=15.0):
+        super().__init__()
+        self.target_angles = target_angles
+        self.width_deg = width_deg
+        self._patterns = [self._make_pattern(target_angles, width_deg)]
+
+    @staticmethod
+    def _make_pattern(target_angles, width_deg):
+        sigma = np.deg2rad(width_deg)
+        var = sigma ** 2
+
+        def pattern(theta, phi):
+            gain = dr.zeros(mi.Float, dr.width(theta))
+            for th_t, ph_t in target_angles:
+                r = r_hat(theta, phi)
+                r_t = r_hat(th_t, ph_t)
+                cos_angle = dr.clip(r.x * r_t.x + r.y * r_t.y + r.z * r_t.z, -1.0, 1.0)
+                gain += dr.exp(-0.5 * dr.acos(cos_angle) ** 2 / var)
+            pattern_linear_gain = dr.maximum(gain, 1e-6) * 6.30957
+            c_theta = mi.Complex2f(dr.sqrt(pattern_linear_gain), 0.0)
+            c_phi = dr.zeros(mi.Complex2f, dr.width(theta))
+            return c_theta, c_phi
+        return pattern
+
+    @property
+    def patterns(self):
+        return self._patterns
+
+    @staticmethod
+    def from_positions(radar_position, detected_positions, width_deg=15.0):
+        radar_pos = np.asarray(radar_position, dtype=float)
+        angles = []
+        for pos in detected_positions:
+            vec = np.asarray(pos, dtype=float) - radar_pos
+            r = float(np.linalg.norm(vec))
+            if r < 1e-6:
+                continue
+            theta = float(np.arccos(vec[2] / r))
+            phi = float(np.arctan2(vec[1], vec[0]))
+            angles.append((theta, phi))
+        if not angles:
+            angles = [(np.pi / 2, 0.0)]
+        return BeamformingPattern(angles, width_deg=width_deg)
+
+    def to_planar_array(self, num_rows, num_cols, spacing, polarization="V"):
+        global _ACTIVE_PATTERN
+        _ACTIVE_PATTERN = self
+        return PlanarArray(
+            num_rows=num_rows,
+            num_cols=num_cols,
+            vertical_spacing=spacing,
+            horizontal_spacing=spacing,
+            pattern="multi_lobe",
+            polarization=polarization,
+        )
+
+    @classmethod
+    def register(cls, name="multi_lobe"):
+        global _PATTERN_REGISTERED
+        if _PATTERN_REGISTERED:
+            return
+        try:
+            def factory(**kwargs):
+                global _ACTIVE_PATTERN
+                if _ACTIVE_PATTERN is not None:
+                    return _ACTIVE_PATTERN
+                return cls([(np.pi / 2, 0.0)])
+            antenna_pattern_registry.register(name=name, obj=factory)
+            _PATTERN_REGISTERED = True
+        except Exception:
+            _PATTERN_REGISTERED = True
+
+
+BeamformingPattern.register()
+# ------------------- END of Beamforming helpers -------------------
 
 
 class SionnaRT:
@@ -42,6 +484,37 @@ class SionnaRT:
         self.propagation_calculation_calls = 0
         self.propagation_calculation_receiver_count = 0
         self.perf_stats = {}
+
+        # ISAC state (opt-in via initialize(sim_settings["enable_situation_awareness"]))
+        self.enable_SA = False
+        self.mti_filter = None
+        self.tracker = None
+        self.rx_material = None
+        self.rx_type_path = None
+        self.calib = None
+        self.beamwidth_deg = 20.0
+        self.isac_min_power = 1e-25
+        self.isac_eps_cluster = 0.8
+        self.isac_min_displacement = 0.3
+        self.isac_max_depth = 3
+        self.isac_diffuse_reflection = True
+        self.isac_samples_per_src = 1_000_000
+        self.isac_single_bounce_only = True
+        self.isac_phase_center_offset = 0.0
+        self.isac_mti_warmup_frames = 0
+        self.isac_mti_dist_thresh = 0.5   # kept separate from eps_cluster
+        self.isac_tracker_min_age = 3
+        self.radar_tx_pos = None
+        self._radar_tx_array = None
+        self._radar_rx_array = None
+        self._comm_tx_polarization = "VH"
+        self._comm_tx_num_rows = 8
+        self._comm_tx_num_cols = 8
+        self._comm_tx_v_spacing = 0.0
+        self._comm_tx_h_spacing = 0.0
+        self._beam_epoch = 0
+        self._beam_active = False
+        self.detection_history = []
 
     def _perf_add(self, name: str, value: float):
         self.perf_stats[name] = float(self.perf_stats.get(name, 0.0)) + float(value)
@@ -88,24 +561,41 @@ class SionnaRT:
             pattern=pattern,
             polarization=polarization,
         )
+        tx_num_rows = sim_settings.get("tx_num_rows", 8)
+        tx_num_cols = sim_settings.get("tx_num_cols", 8)
+        rx_num_rows = sim_settings.get("rx_num_rows", 2)
+        rx_num_cols = sim_settings.get("rx_num_cols", 2)
         self.scene.tx_array = PlanarArray(
-            num_rows=sim_settings.get("tx_num_rows", 8),
-            num_cols=sim_settings.get("tx_num_cols", 8),
+            num_rows=tx_num_rows,
+            num_cols=tx_num_cols,
             **array_kwargs,
         )
         self.scene.rx_array = PlanarArray(
-            num_rows=sim_settings.get("rx_num_rows", 2),
-            num_cols=sim_settings.get("rx_num_cols", 2),
+            num_rows=rx_num_rows,
+            num_cols=rx_num_cols,
             **array_kwargs,
         )
+        # Capture comm-array geometry for ISAC array swaps
+        self._comm_tx_num_rows = tx_num_rows
+        self._comm_tx_num_cols = tx_num_cols
+        self._comm_rx_num_rows = rx_num_rows
+        self._comm_rx_num_cols = rx_num_cols
+        self._comm_tx_v_spacing = v_spacing
+        self._comm_tx_h_spacing = h_spacing
+        self._comm_tx_polarization = polarization
+        self._comm_f_c = f_c
 
         tx_names = sim_settings.get("tx_names", [""])
         tx_ids = sim_settings.get("tx_ids", [])
         tx_locations = sim_settings.get("tx_locations", [[0.0, 0.0, 20.0]])
         tx_power = sim_settings.get("tx_power", 46.0)
+        tx_look_at = sim_settings.get("tx_look_at", [])
         self.transmitters = dict(zip(tx_names, tx_ids))
         for name, pos in zip(tx_names, tx_locations):
             self.scene.add(Transmitter(name=name, position=pos, power_dbm=tx_power, color=[1, 0, 0]))
+        for name, target in zip(tx_names, tx_look_at):
+            if target is not None:
+                self.scene.transmitters[name].look_at(target)
 
         rx_names = sim_settings.get("rx_names", [""])
         rx_ids = sim_settings.get("rx_ids", [])
@@ -136,15 +626,116 @@ class SionnaRT:
             self.scene.add(Receiver(name=name, position=pos, color=[0, 1, 0], display_radius=0.5))
 
         rx_mesh = sim_settings.get("rx_mesh", self.assets_dir + "/objects/cube.obj")
+        rx_scattering = float(sim_settings.get("isac_rx_scattering_coefficient", 0.5))
+        self._rx_mesh_path = rx_mesh        # used by prime_mti_background to restore meshes
+        self._rx_scattering = rx_scattering
         rx_material = RadioMaterial(
-            "rx_material", relative_permittivity=1.0, conductivity=1e10, scattering_coefficient=0.1
+            "rx_material", relative_permittivity=1.0, conductivity=1e10,
+            scattering_coefficient=rx_scattering,
         )
+        self.rx_material = rx_material
         self.scene.edit(add=[
             SceneObject(name=f"rx_obj_{n}", fname=rx_mesh, radio_material=rx_material)
             for n in rx_names
         ])
         for name, pos in zip(rx_names, rx_locations):
-            self.scene.get(f"rx_obj_{name}").position = [pos[0], pos[1], 0.2]
+            self.scene.get(f"rx_obj_{name}").position = [pos[0], pos[1], pos[2]]
+
+        # Stash radar TX position (first TX) for ISAC detection geometry
+        if tx_locations:
+            self.radar_tx_pos = list(tx_locations[0])
+
+        # --- ISAC initialization (opt-in) ---
+        self.enable_SA = bool(sim_settings.get("enable_situation_awareness", False))
+        if self.enable_SA and not _ISAC_AVAILABLE:
+            print("[ISAC] sklearn/scipy not available; disabling ISAC.", flush=True)
+            self.enable_SA = False
+
+        if self.enable_SA:
+            self.isac_min_power = float(sim_settings.get("isac_min_power", self.isac_min_power))
+            self.isac_eps_cluster = float(sim_settings.get("isac_eps_cluster", self.isac_eps_cluster))
+            self.isac_min_displacement = float(
+                sim_settings.get("isac_min_displacement", self.isac_min_displacement)
+            )
+            self.beamwidth_deg = float(sim_settings.get("isac_beamwidth_deg", self.beamwidth_deg))
+            self.isac_max_depth = int(sim_settings.get("isac_max_depth", self.isac_max_depth))
+            self.isac_diffuse_reflection = bool(
+                sim_settings.get("isac_diffuse_reflection", self.isac_diffuse_reflection)
+            )
+            self.isac_samples_per_src = int(
+                sim_settings.get("isac_samples_per_src", self.isac_samples_per_src)
+            )
+            self.isac_single_bounce_only = bool(
+                sim_settings.get("isac_single_bounce_only", self.isac_single_bounce_only)
+            )
+            self.isac_phase_center_offset = float(
+                sim_settings.get("isac_phase_center_offset", self.isac_phase_center_offset)
+            )
+            self.isac_mti_warmup_frames = int(
+                sim_settings.get("isac_mti_warmup_frames", self.isac_mti_warmup_frames)
+            )
+            self.isac_mti_dist_thresh = float(
+                sim_settings.get("isac_mti_dist_thresh", self.isac_mti_dist_thresh)
+            )
+            self.isac_tracker_min_age = int(
+                sim_settings.get("isac_tracker_min_age", self.isac_tracker_min_age)
+            )
+            self.rx_type_path = sim_settings.get("rx_type_path", None)
+
+            # Pre-build the radar (iso, VH) arrays with comm dimensions for MIMO shape parity.
+            self._radar_tx_array = PlanarArray(
+                num_rows=self._comm_tx_num_rows,
+                num_cols=self._comm_tx_num_cols,
+                vertical_spacing=self._comm_tx_v_spacing,
+                horizontal_spacing=self._comm_tx_h_spacing,
+                pattern="iso",
+                polarization="VH",
+            )
+            self._radar_rx_array = PlanarArray(
+                num_rows=self._comm_rx_num_rows,
+                num_cols=self._comm_rx_num_cols,
+                vertical_spacing=self._comm_tx_v_spacing,
+                horizontal_spacing=self._comm_tx_h_spacing,
+                pattern="iso",
+                polarization="VH",
+            )
+
+            # Calibrate detection thresholds from the RX-mesh PLY if provided.
+            calib_ply = self.rx_type_path or sim_settings.get("rx_mesh", None)
+            if calib_ply and os.path.isfile(calib_ply) and calib_ply.lower().endswith(".ply"):
+                try:
+                    rx_z = float(rx_locations[0][2]) if rx_locations else None
+                    self.calib = calibrate_detect_objects(calib_ply, obj_z_override=rx_z)
+                    # User overrides take precedence over bbox-derived defaults
+                    self.calib["min_power"] = self.isac_min_power
+                    self.calib["eps_cluster"] = self.isac_eps_cluster
+                    if "isac_z_min" in sim_settings:
+                        self.calib["z_min"] = float(sim_settings["isac_z_min"])
+                    if "isac_z_max" in sim_settings:
+                        self.calib["z_max"] = float(sim_settings["isac_z_max"])
+                except Exception as exc:
+                    print(f"[ISAC] calibrate_detect_objects failed: {exc}; using defaults",
+                          flush=True)
+                    self.calib = {"eps_cluster": self.isac_eps_cluster,
+                                  "z_min": 0.0, "z_max": 3.0,
+                                  "min_power": self.isac_min_power,
+                                  "bbox_size": np.array([1.0, 1.0, 1.0])}
+            else:
+                self.calib = {"eps_cluster": self.isac_eps_cluster,
+                              "z_min": 0.0, "z_max": 3.0,
+                              "min_power": self.isac_min_power,
+                              "bbox_size": np.array([1.0, 1.0, 1.0])}
+
+            self.mti_filter = CloudMTI(dist_thresh=self.isac_mti_dist_thresh)
+            self.tracker = Tracker(
+                max_missed=3,
+                min_age_for_output=self.isac_tracker_min_age,
+                min_displacement=self.isac_min_displacement,
+            )
+            self._beam_epoch = 0
+            self._beam_active = False
+            self.detection_history = []
+
         self._perf_add("python_initialize_seconds", time.perf_counter() - init_start)
 
     def update_position(self, rx_name: str, position: list[float]):
@@ -170,7 +761,7 @@ class SionnaRT:
             self.scene.receivers[rx_name].position = position
         obj_name = f"rx_obj_{rx_name}"
         if obj_name in self.scene.objects:
-            self.scene.objects[obj_name].position = [position[0], position[1], 0.2]
+            self.scene.objects[obj_name].position = [position[0], position[1], position[2]]
 
     def add_receiver(self, rx_name: str, position: list[float], rx_id=None) -> bool:
         if self.scene is None:
@@ -412,19 +1003,423 @@ class SionnaRT:
         self._perf_add("python_export_seconds", time.perf_counter() - export_start)
         return records
 
+    # ------------------- START of ISAC pipeline -------------------
+    def _install_radar_receivers(self):
+        """Add receiver named 'radar_rx_<tx>' colocated at each TX. Returns created names."""
+        created = []
+        if self.scene is None:
+            return created
+        for tx_name, tx in list(self.scene.transmitters.items()):
+            rname = f"radar_rx_{tx_name}"
+            try:
+                if rname in self.scene.receivers:
+                    self.scene.remove(rname)
+                pos = np.asarray(tx.position).ravel().tolist()[:3]
+                self.scene.add(Receiver(name=rname, position=pos,
+                                        color=[1, 0, 1], display_radius=0.2))
+                created.append(rname)
+            except Exception as exc:
+                print(f"[ISAC] failed to install radar RX {rname}: {exc}", flush=True)
+        return created
+
+    def _remove_radar_receivers(self, names):
+        for n in names:
+            try:
+                if n in self.scene.receivers:
+                    self.scene.remove(n)
+            except Exception:
+                pass
+
+    def _run_sensing_solve(self):
+        """Run per-TX monostatic sensing solves and return confirmed track positions.
+
+        For each registered transmitter a separate path-solve is performed with
+        all other TXs (and their radar RXs) temporarily removed, so that Sionna
+        averages tau/angles only over the single monostatic TX-RX pair. ERPs from
+        all TXs are collected into a shared pool before MTI filtering and DBSCAN
+        clustering, giving full-scene coverage when multiple gNBs are deployed.
+        Comm receivers are removed for the duration of all solves.
+        """
+        # Remove comm receivers once for all solves
+        comm_rx_snapshot = {}
+        for name in list(self.receivers.keys()):
+            if name in self.scene.receivers:
+                pos = np.asarray(self.scene.receivers[name].position).ravel().tolist()
+                self.scene.remove(name)
+                comm_rx_snapshot[name] = pos
+
+        # Snapshot all radar RX positions (installed before this call)
+        all_radar_rx_snapshot = {}
+        for name in list(self.scene.receivers.keys()):
+            if name.startswith("radar_rx_"):
+                all_radar_rx_snapshot[name] = (
+                    np.asarray(self.scene.receivers[name].position).ravel().tolist()
+                )
+
+        # Snapshot all TX positions and power
+        tx_names = list(self.transmitters.keys())
+        tx_snapshot = {}
+        for name in tx_names:
+            if name in self.scene.transmitters:
+                tx_obj = self.scene.transmitters[name]
+                tx_snapshot[name] = {
+                    "pos": np.asarray(tx_obj.position).ravel().tolist(),
+                    "pwr": float(np.asarray(tx_obj.power_dbm).ravel()[0]),
+                }
+
+        try:
+            sensing_depth = max(int(self.isac_max_depth), 3)
+            all_erp = []
+            all_pwr = []
+
+            for radar_tx_name in tx_names:
+                if radar_tx_name not in tx_snapshot:
+                    continue
+                gnb_pos = tx_snapshot[radar_tx_name]["pos"][:3]
+
+                # Remove all TXs except current radar TX
+                removed_txs = {}
+                for name, info in tx_snapshot.items():
+                    if name != radar_tx_name and name in self.scene.transmitters:
+                        self.scene.remove(name)
+                        removed_txs[name] = info
+
+                # Remove all radar RXs except the one colocated with current TX
+                keep_rx = f"radar_rx_{radar_tx_name}"
+                removed_rxs = {}
+                for name, pos in all_radar_rx_snapshot.items():
+                    if name != keep_rx and name in self.scene.receivers:
+                        self.scene.remove(name)
+                        removed_rxs[name] = pos
+
+                try:
+                    paths = self.path_solver(
+                        scene=self.scene,
+                        samples_per_src=int(self.isac_samples_per_src),
+                        max_depth=sensing_depth,
+                        los=True,
+                        specular_reflection=True,
+                        diffuse_reflection=bool(self.isac_diffuse_reflection),
+                        edge_diffraction=False,
+                        refraction=False,
+                        synthetic_array=True,
+                        seed=42,
+                    )
+                    erp, pwr = _extract_erps(
+                        paths, gnb_pos,
+                        min_power=self.calib["min_power"],
+                        z_min=self.calib["z_min"],
+                        z_max=self.calib["z_max"],
+                        single_bounce_only=self.isac_single_bounce_only,
+                        phase_center_offset=self.isac_phase_center_offset,
+                    )
+                    if len(erp):
+                        all_erp.append(erp)
+                        all_pwr.append(pwr)
+                except Exception as exc:
+                    print(f"[ISAC] sensing solve for {radar_tx_name} failed: {exc}", flush=True)
+                finally:
+                    # Restore TXs and radar RXs removed for this solve
+                    for name, info in removed_txs.items():
+                        self.scene.add(Transmitter(name=name, position=info["pos"],
+                                                   power_dbm=info["pwr"], color=[1, 0, 0]))
+                    for name, pos in removed_rxs.items():
+                        self.scene.add(Receiver(name=name, position=pos,
+                                                color=[1, 0, 1], display_radius=0.2))
+        finally:
+            for name, pos in comm_rx_snapshot.items():
+                self.scene.add(Receiver(name=name, position=pos,
+                                        color=[0, 1, 0], display_radius=0.5))
+
+        if not all_erp:
+            return self.tracker.process_frame([])
+
+        ERP = np.vstack(all_erp)
+        PWR = np.concatenate(all_pwr)
+
+        if self.mti_filter is not None:
+            ERP, PWR = self.mti_filter.filter(ERP, PWR)
+
+        if len(ERP) == 0:
+            return self.tracker.process_frame([])
+
+        labels = DBSCAN(eps=self.calib["eps_cluster"], min_samples=2).fit(ERP).labels_
+        ids = sorted(set(labels) - {-1})
+        max_targets = max(4, len(getattr(self, "receivers", {})))
+        raw = []
+        for k in ids:
+            m = labels == k
+            best_idx = np.argmax(PWR[m])
+            raw.append({"position": ERP[m][best_idx], "power": float(PWR[m].sum())})
+        raw.sort(key=lambda x: x["power"], reverse=True)
+        detections = [{"id": i, "position": r["position"], "power": r["power"]}
+                      for i, r in enumerate(raw[:max_targets])]
+        return self.tracker.process_frame(detections)
+
+    def prime_mti_background(self, n_frames: int = 3) -> None:
+        """Seed the MTI background with static-clutter-only frames.
+
+        Temporarily removes all robot mesh objects (rx_obj_*) from the scene,
+        runs ``n_frames`` sensing path-solves, and feeds the resulting ERPs into
+        ``mti_filter.prime()``.  Robot meshes are restored afterward.
+
+        Call this once before the simulation loop when the scene contains static
+        reflectors (walls, racks, furniture) that would otherwise contaminate
+        the MTI background if it were seeded from a live frame that also
+        contains robot echoes.
+        """
+        if not self.enable_SA or self.mti_filter is None:
+            return
+
+        # Stash and remove all robot mesh objects
+        rx_obj_snapshot = {}
+        for name in list(getattr(self, "receivers", {}).keys()):
+            obj_name = f"rx_obj_{name}"
+            try:
+                obj = self.scene.get(obj_name)
+                if obj is not None:
+                    rx_obj_snapshot[obj_name] = np.asarray(obj.position).ravel().tolist()
+                    self.scene.remove(obj_name)
+            except Exception:
+                pass
+
+        # Remove comm receivers so the solve is radar-only
+        comm_rx_snapshot = {}
+        for name in list(self.receivers.keys()):
+            if name in self.scene.receivers:
+                pos = np.asarray(self.scene.receivers[name].position).ravel().tolist()
+                self.scene.remove(name)
+                comm_rx_snapshot[name] = pos
+
+        # Remove extra TXs beyond the first (radar TX) — same reason as _run_sensing_solve
+        radar_tx_name = list(self.transmitters.keys())[0] if self.transmitters else None
+        extra_tx_snapshot = {}
+        for name in list(self.transmitters.keys()):
+            if name == radar_tx_name:
+                continue
+            if name in self.scene.transmitters:
+                pos = np.asarray(self.scene.transmitters[name].position).ravel().tolist()
+                extra_tx_snapshot[name] = pos
+                self.scene.remove(name)
+
+        # Enable diffuse scattering on all static scene objects so they produce
+        # clutter ERPs even when no robot meshes are present. This is needed in
+        # scenes (e.g. warehouse) where built-in materials have scattering_coefficient=0.
+        _clutter_scattering = 0.3
+        _orig_scattering = {}
+        for obj_name, obj in list(self.scene.objects.items()):
+            try:
+                mat = obj.radio_material
+                if mat is not None:
+                    orig_s = float(np.asarray(mat.scattering_coefficient).ravel()[0])
+                    if orig_s < _clutter_scattering:
+                        _orig_scattering[obj_name] = orig_s
+                        mat.scattering_coefficient = _clutter_scattering
+            except Exception:
+                pass
+
+        # Add radar RX colocated at gNB
+        gnb_pos = self.radar_tx_pos
+        if gnb_pos is None and self.scene.transmitters:
+            gnb_pos = np.asarray(
+                next(iter(self.scene.transmitters.values())).position
+            ).ravel().tolist()[:3]
+        rname = "_mti_prime_rx"
+        try:
+            if rname in self.scene.receivers:
+                self.scene.remove(rname)
+            self.scene.add(Receiver(name=rname, position=gnb_pos,
+                                    color=[0.5, 0, 0.5], display_radius=0.1))
+        except Exception as exc:
+            print(f"[MTI-prime] could not add radar RX: {exc}", flush=True)
+
+        saved_tx = self.scene.tx_array
+        saved_rx = self.scene.rx_array
+        self.scene.tx_array = self._radar_tx_array
+        self.scene.rx_array = self._radar_rx_array
+
+        try:
+            for i in range(n_frames):
+                try:
+                    paths = self.path_solver(
+                        scene=self.scene,
+                        samples_per_src=int(self.isac_samples_per_src),
+                        max_depth=max(int(self.isac_max_depth), 3),
+                        los=True, specular_reflection=True,
+                        diffuse_reflection=bool(self.isac_diffuse_reflection),
+                        edge_diffraction=False, refraction=False,
+                        synthetic_array=True, seed=42 + i,
+                    )
+                    a       = np.array(paths.a)
+                    tau     = np.array(paths.tau)
+                    theta_r = np.array(paths.theta_r)
+                    phi_r   = np.array(paths.phi_r)
+                    powers  = np.mean(np.abs(a)**2,    axis=tuple(range(a.ndim-1)))
+                    tau_1d  = np.mean(tau,             axis=tuple(range(tau.ndim-1)))
+                    th_1d   = np.mean(theta_r,         axis=tuple(range(theta_r.ndim-1)))
+                    ph_1d   = np.mean(phi_r,           axis=tuple(range(phi_r.ndim-1)))
+
+                    valid = tau_1d > 1e-9
+                    L = SPEED_OF_LIGHT * tau_1d[valid]
+                    scaling = np.maximum(L / 10.0, 1.0) ** 1.1
+                    dyn_thr = self.calib["min_power"] / scaling
+                    vp  = powers[valid] > dyn_thr
+                    L_f = L[vp]; th_f = th_1d[valid][vp]; ph_f = ph_1d[valid][vp]
+                    d_dir = np.stack([np.sin(th_f)*np.cos(ph_f),
+                                      np.sin(th_f)*np.sin(ph_f),
+                                      np.cos(th_f)], axis=-1)
+                    ERP = np.array(gnb_pos) + (L_f[:, None] / 2.0) * d_dir
+                    vz  = ((ERP[:, 2] >= self.calib["z_min"]) &
+                           (ERP[:, 2] <= self.calib["z_max"]))
+                    clutter_erps = ERP[vz]
+                    if len(clutter_erps):
+                        self.mti_filter.prime(clutter_erps)
+                    print(f"[MTI-prime] frame {i+1}/{n_frames}: "
+                          f"{len(clutter_erps)} clutter ERPs added to background",
+                          flush=True)
+                except Exception as exc:
+                    print(f"[MTI-prime] frame {i+1} failed: {exc}", flush=True)
+        finally:
+            self.scene.tx_array = saved_tx
+            self.scene.rx_array = saved_rx
+            try:
+                if rname in self.scene.receivers:
+                    self.scene.remove(rname)
+            except Exception:
+                pass
+            for name, pos in comm_rx_snapshot.items():
+                self.scene.add(Receiver(name=name, position=pos,
+                                        color=[0, 1, 0], display_radius=0.5))
+            # Restore extra TXs
+            for name, pos in extra_tx_snapshot.items():
+                try:
+                    pwr = 46.0
+                    if self.scene.transmitters:
+                        pwr = next(iter(self.scene.transmitters.values())).power_dbm
+                    self.scene.add(Transmitter(name=name, position=pos,
+                                               power_dbm=pwr, color=[1, 0, 0]))
+                except Exception:
+                    pass
+            # Restore original scattering coefficients
+            for obj_name, orig_s in _orig_scattering.items():
+                try:
+                    self.scene.objects[obj_name].radio_material.scattering_coefficient = orig_s
+                except Exception:
+                    pass
+            # Restore robot mesh objects
+            rx_mesh_path = getattr(self, "_rx_mesh_path", None)
+            for obj_name, saved_pos in rx_obj_snapshot.items():
+                try:
+                    self.scene.get(obj_name)  # already present → no-op
+                except Exception:
+                    if rx_mesh_path:
+                        rx_mat = RadioMaterial(
+                            "rx_material", relative_permittivity=1.0,
+                            conductivity=1e10,
+                            scattering_coefficient=float(
+                                getattr(self, "_rx_scattering", 0.5)))
+                        try:
+                            self.scene.edit(add=[SceneObject(
+                                name=obj_name, fname=rx_mesh_path,
+                                radio_material=rx_mat)])
+                            self.scene.get(obj_name).position = saved_pos
+                        except Exception as exc2:
+                            print(f"[MTI-prime] could not restore {obj_name}: {exc2}",
+                                  flush=True)
+
+    def _build_multilobe_tx_array(self, tracks):
+        gnb_pos = self.radar_tx_pos
+        bf = BeamformingPattern.from_positions(
+            radar_position=gnb_pos,
+            detected_positions=tracks,
+            width_deg=self.beamwidth_deg,
+        )
+        # Use single polarization for the multi-lobe pattern; this changes
+        # mimo_tx_elems if the comm array was VH. To keep MIMO shape constant
+        # we mirror the comm polarization (the pattern is applied per element).
+        polarization = self._comm_tx_polarization
+        # If polarization is dual ("VH") the multi-lobe factory still works;
+        # Sionna will replicate the pattern across both polarizations.
+        return bf.to_planar_array(
+            num_rows=self._comm_tx_num_rows,
+            num_cols=self._comm_tx_num_cols,
+            spacing=self._comm_tx_h_spacing,
+            polarization=polarization,
+        )
+
+    def _beam_epoch_perturb(self, tx_pos):
+        """Deterministic offset > m_minDelta (0.1 m) tied to _beam_epoch.
+
+        Forces SionnaPropagationCache::IsEntryValid to invalidate cached
+        beamformed records when the beam set changes between snapshots.
+        """
+        eps = 0.15
+        ex = eps * ((self._beam_epoch % 7) - 3)
+        ey = eps * (((self._beam_epoch // 7) % 7) - 3)
+        return [float(tx_pos[0]) + ex, float(tx_pos[1]) + ey, float(tx_pos[2])]
+
+    def get_detected_objects(self, since_time: float = -1.0):
+        """Return logged detections at or after ``since_time``; -1 returns all."""
+        if since_time < 0.0:
+            return list(self.detection_history)
+        return [r for r in self.detection_history if r["time"] >= since_time]
+    # ------------------- END of ISAC pipeline -------------------
+
     def perform_calculation(self, _current_time: float):
         perform_start = time.perf_counter()
+
+        # --- ISAC pre-pass: sensing + (optional) beamforming array swap ---
+        comm_tx_array_backup = None
+        beam_active_this_call = False
+        if self.enable_SA:
+            try:
+                isac_start = time.perf_counter()
+                comm_tx_array_backup = self.scene.tx_array
+                comm_rx_array_backup = self.scene.rx_array
+
+                # Sensing pass: swap to radar arrays and add radar RXs at TXs
+                self.scene.tx_array = self._radar_tx_array
+                self.scene.rx_array = self._radar_rx_array
+                radar_names = self._install_radar_receivers()
+                try:
+                    tracks = self._run_sensing_solve()
+                finally:
+                    self._remove_radar_receivers(radar_names)
+                    self.scene.rx_array = comm_rx_array_backup
+
+                # Log detection history
+                self.detection_history.append({
+                    "time": float(_current_time),
+                    "positions": [pos.tolist() if hasattr(pos, "tolist") else list(pos)
+                                  for pos in tracks],
+                })
+
+                if tracks:
+                    self._beam_epoch += 1
+                    self.scene.tx_array = self._build_multilobe_tx_array(tracks)
+                    beam_active_this_call = True
+                else:
+                    self.scene.tx_array = comm_tx_array_backup
+                self._perf_add("python_isac_pre_seconds", time.perf_counter() - isac_start)
+            except Exception as exc:
+                import traceback
+                print(f"[ISAC] pre-pass failed, falling back to comm: {exc}", flush=True)
+                traceback.print_exc()
+                if comm_tx_array_backup is not None:
+                    self.scene.tx_array = comm_tx_array_backup
+                beam_active_this_call = False
+        self._beam_active = beam_active_this_call
+
+        # --- Adaptive virtual receivers (unchanged) ---
         self.clear_virtual_receivers(prefix="ns3vrx_")
         created = []
         real_rx_names = [
             name for name in list(self.scene.receivers.keys())
-            if not name.startswith(("vrx_", "ns3vrx_"))
+            if not name.startswith(("vrx_", "ns3vrx_", "radar_rx_"))
         ]
-
         for rx_name in real_rx_names:
             rx_pos = self.scene.receivers[rx_name].position.numpy().ravel().tolist()
             virtual_points = self._adaptive_virtual_rx_positions(rx_name, rx_pos)
-
             for idx, point in enumerate(virtual_points):
                 vrx_name = f"ns3vrx_{rx_name}_{idx}"
                 self.add_receiver(vrx_name, point, rx_id=self.receivers.get(rx_name))
@@ -435,6 +1430,18 @@ class SionnaRT:
         finally:
             for name in created:
                 self.remove_receiver(name)
+
+        # --- Restore comm TX array so a baseline next call sees identity state ---
+        if self.enable_SA and comm_tx_array_backup is not None and beam_active_this_call:
+            try:
+                self.scene.tx_array = comm_tx_array_backup
+            except Exception:
+                pass
+
+        # --- Cache-staleness mitigation: perturb tx_position when ISAC fired ---
+        if beam_active_this_call:
+            for r in records:
+                r["tx_position"] = self._beam_epoch_perturb(r["tx_position"])
 
         self._perf_add("python_perform_calculation_seconds", time.perf_counter() - perform_start)
         return records
