@@ -182,6 +182,23 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
         settings["synthetic_array"] = s.m_syntheticArray;
         settings["enable_fast_path"] = s.m_enableFastPath;
 
+        if (s.enable_situation_awareness) {
+            settings["enable_situation_awareness"] = s.enable_situation_awareness;
+            settings["isac_min_power"]         = s.isac_min_power;
+            settings["isac_eps_cluster"]       = s.isac_eps_cluster;
+            settings["isac_min_displacement"]  = s.isac_min_displacement;
+            settings["isac_beamwidth_deg"]     = s.isac_beamwidth_deg;
+            settings["isac_max_depth"]         = s.isac_max_depth;
+            settings["isac_diffuse_reflection"]= s.isac_diffuse_reflection;
+            settings["isac_samples_per_src"]   = s.isac_samples_per_src;
+            settings["isac_single_bounce_only"]= s.isac_single_bounce_only;
+            settings["isac_mti_dist_thresh"]   = s.isac_mti_dist_thresh;
+            settings["isac_tracker_min_age"]   = s.isac_tracker_min_age;
+            settings["isac_mti_warmup_frames"] = s.isac_mti_warmup_frames;
+            if (!s.rx_type_path.empty())
+                settings["rx_type_path"] = s.rx_type_path;
+        }
+
         py::list tx_names = py::cast(s.tx_names);
         py::list tx_ids   = py::cast(s.tx_ids);
         py::list tx_locs;
@@ -296,6 +313,36 @@ SionnaPyEmbed::SionnaGetPerfStats() {
     } catch (...) {
     }
     return stats;
+}
+
+std::vector<SionnaDetectionRecord>
+SionnaPyEmbed::SionnaGetDetectedObjects(double since_time_s)
+{
+    std::vector<SionnaDetectionRecord> results;
+    if (!m_initialized) return results;
+    try {
+        py::object py_records = m_impl->m_sionnaInstance.attr("get_detected_objects")(since_time_s);
+        py::list frames = py_records.cast<py::list>();
+        for (auto frame_item : frames) {
+            py::dict frame = frame_item.cast<py::dict>();
+            double t = frame["time"].cast<double>();
+            py::list positions = frame["positions"].cast<py::list>();
+            int track_id = 0;
+            for (auto pos_item : positions) {
+                py::list pos = pos_item.cast<py::list>();
+                SionnaDetectionRecord rec;
+                rec.time     = t;
+                rec.track_id = track_id++;
+                rec.x        = pos[0].cast<double>();
+                rec.y        = pos[1].cast<double>();
+                rec.z        = pos[2].cast<double>();
+                results.push_back(rec);
+            }
+        }
+    } catch (const std::exception& e) {
+        NS_LOG_ERROR("SionnaGetDetectedObjects failed: " << e.what());
+    }
+    return results;
 }
 
 } // ns3 namespace

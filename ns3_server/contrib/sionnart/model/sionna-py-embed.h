@@ -65,6 +65,27 @@ struct SionnaInitSettings {
     double adaptive_future_direction_dot_threshold = 0.7;
     bool m_syntheticArray = true;
     bool m_enableFastPath = true;
+
+    // ISAC settings
+    bool enable_situation_awareness = false;
+    double isac_min_power         = 1e-25;
+    double isac_eps_cluster       = 1.5;
+    double isac_min_displacement  = 0.3;
+    double isac_beamwidth_deg     = 20.0;
+    int    isac_max_depth         = 3;
+    bool   isac_diffuse_reflection = true;
+    int    isac_samples_per_src   = 2000000;
+    bool   isac_single_bounce_only = false;
+    double isac_mti_dist_thresh   = 0.4;
+    int    isac_tracker_min_age   = 2;
+    int    isac_mti_warmup_frames = 0;
+    std::string rx_type_path;   // ISAC radar mesh (.ply)
+};
+
+struct SionnaDetectionRecord {
+    double time;
+    int    track_id;
+    double x, y, z;
 };
 
 class SionnaPyEmbed {
@@ -79,6 +100,7 @@ class SionnaPyEmbed {
         std::vector<SionnaPropagationData> SionnaPerformCalculation(double current_time = 0.0);
         int  SionnaGetCalculationCalls();
         std::map<std::string, double> SionnaGetPerfStats();
+        std::vector<SionnaDetectionRecord> SionnaGetDetectedObjects(double since_time_s = -1.0);
 
     private:
         SionnaPyEmbed();
