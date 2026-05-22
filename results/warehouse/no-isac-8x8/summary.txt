@@ -5,11 +5,11 @@ Run
 ---
 scenario: warehouse-no-isac
 isac_enabled: false
-simulation_time_s: 180
-simulator_run_wall_clock_s: 40.6515
+simulation_time_s: 600
+simulator_run_wall_clock_s: 108.103
 rng_seed: 42
 rng_run: 42
-output_dir: /home/aung/code/docte6g/results/warehouse-no-isac
+output_dir: /home/aung/code/docte6g/results/warehouse/no-isac-8x8
 
 Assets
 ------
@@ -126,7 +126,7 @@ sionna_rx_names: rack_sensor_1 rack_sensor_2 rack_sensor_3 robot_1 robot_2 robot
 sionna_rx_ids: 1 2 3 4 5 6
 sionna_rx_mesh: /home/aung/code/docte6g/assets/objects/iw_hub/iw_hub.ply
 sionna_rx_type_path: 
-sionna_simulation_duration_s: 180
+sionna_simulation_duration_s: 600
 enable_situation_awareness: false
 isac_detection_count: 0
 isac_min_power: 1e-25

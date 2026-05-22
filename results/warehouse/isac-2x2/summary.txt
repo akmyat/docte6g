@@ -5,11 +5,11 @@ Run
 ---
 scenario: warehouse-isac
 isac_enabled: true
-simulation_time_s: 180
-simulator_run_wall_clock_s: 163.643
+simulation_time_s: 600
+simulator_run_wall_clock_s: 545.78
 rng_seed: 42
 rng_run: 42
-output_dir: /home/aung/code/docte6g/results/warehouse-isac
+output_dir: /home/aung/code/docte6g/results/warehouse/isac-2x2
 
 Assets
 ------
@@ -30,12 +30,12 @@ ue_tx_power_dbm: 46
 antenna_pattern: tr38901
 polarization: VH
 dual_polarized: true
-gnb_array_rows: 8
-gnb_array_cols: 8
+gnb_array_rows: 2
+gnb_array_cols: 2
 ue_array_rows: 2
 ue_array_cols: 2
-gnb_horizontal_ports: 4
-gnb_vertical_ports: 4
+gnb_horizontal_ports: 1
+gnb_vertical_ports: 1
 ue_horizontal_ports: 1
 ue_vertical_ports: 1
 mimo_rank_limit: 2
@@ -126,9 +126,9 @@ sionna_rx_names: rack_sensor_1 rack_sensor_2 rack_sensor_3 robot_1 robot_2 robot
 sionna_rx_ids: 1 2 3 4 5 6
 sionna_rx_mesh: /home/aung/code/docte6g/assets/objects/iw_hub/iw_hub.ply
 sionna_rx_type_path: /home/aung/code/docte6g/assets/objects/iw_hub/iw_hub.ply
-sionna_simulation_duration_s: 180
+sionna_simulation_duration_s: 600
 enable_situation_awareness: true
-isac_detection_count: 1170
+isac_detection_count: 3694
 isac_min_power: 1e-25
 isac_eps_cluster: 1.5
 isac_mti_dist_thresh: 0.4

@@ -65,11 +65,15 @@ main(int argc, char* argv[])
     double simTimeSec = 30.0;
     std::string assetsRoot = "/home/aung/code/docte6g/assets";
     std::string outputDir  = "/home/aung/code/docte6g/results/warehouse-no-isac";
+    uint16_t gnbAntennaRows = 8;
+    uint16_t gnbAntennaCols = 8;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("simTime", "Simulation time (s)", simTimeSec);
     cmd.AddValue("assetsRoot", "Path to assets directory", assetsRoot);
     cmd.AddValue("outputDir",  "Output directory for results", outputDir);
+    cmd.AddValue("gnbAntennaRows", "Number of gNB antenna rows", gnbAntennaRows);
+    cmd.AddValue("gnbAntennaCols", "Number of gNB antenna columns", gnbAntennaCols);
     cmd.Parse(argc, argv);
 
     RngSeedManager::SetSeed(42);
@@ -90,8 +94,6 @@ main(int argc, char* argv[])
     const double f_c            = 15e9;       // 15 GHz
     const uint32_t scs          = 120000;     // 120 kHz
     const uint32_t numSubcarriers = 3276;
-    const uint16_t gnbAntennaRows = 8;
-    const uint16_t gnbAntennaCols = 8;
     const uint16_t ueAntennaRows  = 2;
     const uint16_t ueAntennaCols  = 2;
     const double gnbTxPowerDbm    = 46.0;
@@ -145,10 +147,13 @@ main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // Antenna port layout
     // -----------------------------------------------------------------------
-    uint16_t gnbHorizPorts = 4;
-    uint16_t gnbVertPorts  = 4;
+    uint16_t gnbHorizPorts = (gnbAntennaCols >= 8) ? 4u : ((gnbAntennaCols >= 4) ? 2u : 1u);
+    uint16_t gnbVertPorts  = (gnbAntennaRows >= 8) ? 4u : ((gnbAntennaRows >= 4) ? 2u : 1u);
     uint16_t ueHorizPorts  = 1;
     uint16_t ueVertPorts   = 1;
+    if ((gnbAntennaRows % gnbVertPorts) != 0 || (gnbAntennaCols % gnbHorizPorts) != 0) {
+        NS_FATAL_ERROR("gNB antenna port counts must evenly divide antenna rows and columns.");
+    }
     uint16_t gnbTotalPorts = gnbHorizPorts * gnbVertPorts * (isDualPolarized ? 2u : 1u);
     uint16_t ueTotalPorts  = ueHorizPorts * ueVertPorts * (isDualPolarized ? 2u : 1u);
     uint16_t mimoRankLimit = std::min<uint16_t>(gnbTotalPorts, ueTotalPorts);
