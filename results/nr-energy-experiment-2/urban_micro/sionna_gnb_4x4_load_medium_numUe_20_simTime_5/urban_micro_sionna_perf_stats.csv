@@ -1,32 +1,3 @@
-Component,Metric,Value
-cache,lookup_hits,7611696
-cache,lookup_misses,4
-cache,refresh_calls,4
-cache,refresh_seconds,1.44916
-cache,sionna_calculation_calls,4
-cache,sionna_calculation_seconds,0.334257
-cache,pybind_conversion_records,80
-cache,spectrum_channel_matrix_calls,1902925
-cache,spectrum_channel_matrix_seconds,11.0171
-cache,port_cfr_cache_hits,1855425
-cache,port_cfr_cache_misses,31038
-cache,port_cfr_seconds,2.4066
-cache,effective_gain_cache_hits,1863927
-cache,effective_gain_cache_misses,38998
-cache,effective_gain_seconds,7.4554
-cache,scaled_matrix_cache_hits,55460
-cache,scaled_matrix_cache_misses,1847465
-python,cpp_pybind_conversion_records,80
-python,cpp_pybind_conversion_seconds,0.00917465
-python,propagation_calculation_calls,4
-python,propagation_calculation_receiver_count,80
-python,python_cfr_seconds,0.0539515
-python,python_export_seconds,0.0890311
-python,python_initialize_seconds,2.31
-python,python_path_solve_seconds,0.153243
-python,python_perform_calculation_seconds,0.324898
-phased_model,do_calc_rx_psd_calls,4267760
-phased_model,do_calc_rx_psd_seconds,21.5577
-phased_model,effective_gain_fast_path_calls,1902925
-phased_model,legacy_effective_channel_calls,0
-phased_model,psd_update_seconds,8.86742
+version https://git-lfs.github.com/spec/v1
+oid sha256:f5ac6bb5e26662d92cbbffc517fa04a42c99e276350f514baa01820e747e6919
+size 1221

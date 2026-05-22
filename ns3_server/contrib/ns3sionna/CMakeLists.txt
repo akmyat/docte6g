@@ -48,15 +48,13 @@ endif()
 set(proto_source_files model/message.pb.cc model/message.pb.h)
 
 # Module sources and headers.
-# Note: ns3sionna-phased-array-spectrum-propagation-loss-model.{h,cc} is excluded —
-# upstream marks it "TODO: not yet implemented" and its signatures don't match
-# ns-3.46's PhasedArraySpectrumPropagationLossModel base. SISO benchmark doesn't need it.
 set(SOURCE_FILES
         model/ns3sionna-mobility-model.cc
         model/ns3sionna-propagation-cache.cc
         model/ns3sionna-propagation-delay-model.cc
         model/ns3sionna-propagation-loss-model.cc
         model/ns3sionna-spectrum-propagation-loss-model.cc
+        model/ns3sionna-phased-array-spectrum-propagation-loss-model.cc
         model/ns3sionna-cfr-tag.cc
         helper/ns3sionna-helper.cc
         model/message.pb.cc
@@ -68,6 +66,7 @@ set(HEADER_FILES
         model/ns3sionna-propagation-delay-model.h
         model/ns3sionna-propagation-loss-model.h
         model/ns3sionna-spectrum-propagation-loss-model.h
+        model/ns3sionna-phased-array-spectrum-propagation-loss-model.h
         model/ns3sionna-cfr-tag.h
         helper/ns3sionna-helper.h
         helper/ns3sionna-utils.h

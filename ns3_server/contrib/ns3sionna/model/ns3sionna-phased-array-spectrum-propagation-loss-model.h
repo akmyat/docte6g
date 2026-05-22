@@ -86,12 +86,15 @@ class SionnaPhasedArraySpectrumPropagationLossModel : public PhasedArraySpectrum
      * \param bPhasedArrayModel the antenna array of the second node
      * \return the PSD of the received signal
      */
-    Ptr<SpectrumValue> DoCalcRxPowerSpectralDensity(
+    Ptr<SpectrumSignalParameters> DoCalcRxPowerSpectralDensity(
         Ptr<const SpectrumSignalParameters> txPsd,
         Ptr<const MobilityModel> a,
         Ptr<const MobilityModel> b,
         Ptr<const PhasedArrayModel> aPhasedArrayModel,
         Ptr<const PhasedArrayModel> bPhasedArrayModel) const override;
+
+  protected:
+    int64_t DoAssignStreams(int64_t stream) override;
 
   private:
     /**

@@ -96,7 +96,7 @@ DoBeamforming(Ptr<NetDevice> thisDevice,
     double vAngleRadian = completeAngle.GetInclination(); // the elevation angle
 
     // retrieve the number of antenna elements and resize the vector
-    uint64_t totNoArrayElements = thisAntenna->GetNumberOfElements();
+    uint64_t totNoArrayElements = thisAntenna->GetNumElems();
     PhasedArrayModel::ComplexVector antennaWeights(totNoArrayElements);
 
     // the total power is divided equally among the antenna elements
@@ -153,10 +153,13 @@ ComputeSnr(const ComputeSnrParams& params)
 
     Ptr<const SpectrumModel> spectrum_model = txParams->psd->GetSpectrumModel();
 
-    // create the noise PSD
-    Ptr<SpectrumValue> noisePsd =
-        WifiSpectrumValueHelper::CreateNoisePowerSpectralDensity(freq, channelWidth, carrierSpacing, params.noiseFigure, guardBandwidth);
-    NS_LOG_DEBUG("Average noise power " << 10 * log10(Sum(*noisePsd) * carrierSpacing) << " dB");
+    // create the noise PSD manually (thermal noise: kT * NF per Hz, uniform across spectrum)
+    const double kT_dBm_Hz = -174.0; // thermal noise at room temperature in dBm/Hz
+    double noiseFigureLinear = std::pow(10.0, params.noiseFigure / 10.0);
+    double kT_W_Hz = std::pow(10.0, (kT_dBm_Hz - 30.0) / 10.0); // convert dBm/Hz to W/Hz
+    double noisePsdValue = kT_W_Hz * noiseFigureLinear;
+    Ptr<SpectrumValue> noisePsd = Create<SpectrumValue>(spectrum_model);
+    *noisePsd = noisePsdValue;
 
     // apply the pathloss
     double propagationGainDb = m_propagationLossModel->CalcRxPower(0, params.txMob, params.rxMob);
@@ -168,11 +171,12 @@ ComputeSnr(const ComputeSnrParams& params)
     NS_ASSERT_MSG(params.rxAntenna, "params.rxAntenna is nullptr!");
 
     // apply the fast fading and the beamforming gain
-    Ptr<SpectrumValue> rxPsd = m_spectrumLossModel->CalcRxPowerSpectralDensity(txParams,
+    Ptr<SpectrumSignalParameters> rxParams = m_spectrumLossModel->CalcRxPowerSpectralDensity(txParams,
                                                                                params.txMob,
                                                                                params.rxMob,
                                                                                params.txAntenna,
                                                                                params.rxAntenna);
+    Ptr<SpectrumValue> rxPsd = rxParams->psd;
     NS_LOG_DEBUG("Average rx power " << 10 * log10(Sum(*rxPsd) * carrierSpacing) << " dB");
 
     // compute the SNR

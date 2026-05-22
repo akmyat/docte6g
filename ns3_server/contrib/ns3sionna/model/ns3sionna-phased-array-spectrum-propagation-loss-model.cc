@@ -40,7 +40,6 @@ NS_OBJECT_ENSURE_REGISTERED(SionnaPhasedArraySpectrumPropagationLossModel);
 SionnaPhasedArraySpectrumPropagationLossModel::SionnaPhasedArraySpectrumPropagationLossModel()
 {
     NS_LOG_FUNCTION(this);
-    NS_ASSERT_MSG(false, "Not yet implemented");
 }
 
 SionnaPhasedArraySpectrumPropagationLossModel::~SionnaPhasedArraySpectrumPropagationLossModel()
@@ -113,11 +112,11 @@ SionnaPhasedArraySpectrumPropagationLossModel::CalcBeamformingGain(
     std::complex<double> bArrayOverallResponse = 0;
 
     // Compute the dot products between the array responses and the beamforming vectors
-    for (size_t i = 0; i < aPhasedArrayModel->GetNumberOfElements(); i++)
+    for (size_t i = 0; i < aPhasedArrayModel->GetNumElems(); i++)
     {
         aArrayOverallResponse += aArrayResponse[i] * aBfVector[i];
     }
-    for (size_t i = 0; i < bPhasedArrayModel->GetNumberOfElements(); i++)
+    for (size_t i = 0; i < bPhasedArrayModel->GetNumElems(); i++)
     {
         bArrayOverallResponse += bArrayResponse[i] * bBfVector[i];
     }
@@ -140,7 +139,7 @@ SionnaPhasedArraySpectrumPropagationLossModel::CalcBeamformingGain(
     return gain;
 }
 
-Ptr<SpectrumValue>
+Ptr<SpectrumSignalParameters>
 SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
     Ptr<const SpectrumSignalParameters> params,
     Ptr<const MobilityModel> a,
@@ -156,6 +155,7 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
     NS_ASSERT_MSG(a->GetDistanceFrom(b) > 0.0,
                   "The position of a and b devices cannot be the same");
 
+    Ptr<SpectrumSignalParameters> rxParams = params->Copy();
     Ptr<SpectrumValue> rxPsd = Copy<SpectrumValue>(params->psd);
 
     // Retrieve the antenna of device a
@@ -189,12 +189,13 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
     // Apply the above terms to the TX PSD
     *rxPsd *= (1.0 * bfGain);
 
-    return rxPsd;
+    rxParams->psd = rxPsd;
+    return rxParams;
 }
 
 
 int64_t
-SionnaPhasedArraySpectrumPropagationLossModel::AssignStreams(int64_t stream)
+SionnaPhasedArraySpectrumPropagationLossModel::DoAssignStreams(int64_t stream)
 {
     NS_LOG_FUNCTION(this << stream);
     //m_normalRv->SetStream(stream);

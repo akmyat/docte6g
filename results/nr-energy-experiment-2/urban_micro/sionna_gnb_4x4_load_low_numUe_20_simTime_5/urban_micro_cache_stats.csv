@@ -1,6 +1,3 @@
-Timestamp_ns,TotalHits,TotalMisses,TotalSamples
-0,0,0,0
-1000000000,327043,1,800
-2000000000,954806,2,1600
-3000000000,1576481,3,2400
-4000000000,2196893,3,3200
+version https://git-lfs.github.com/spec/v1
+oid sha256:1dafbe5bfc65535a1371a8d5ca77c06044d90e146730ed2a1e75c039cce4a94a
+size 157
