@@ -1,32 +1,43 @@
-set(WAREHOUSE_LIBS
-    ${libsionnart}
-    ${libwarehouse}
-    ${libnr}
-    ${libflow-monitor}
-    ${libenergy}
-    ${libinternet}
-    ${libmobility}
-    ${libantenna}
-    ${libspectrum}
-    ${libpoint-to-point}
-    ${libapplications}
-    ${libconfig-store}
-    ${libcsma}
-    ${libmqtt}
-)
-
 build_exec(
-    EXECNAME warehouse_isac
-    SOURCE_FILES main_isac.cc
-    LIBRARIES_TO_LINK ${WAREHOUSE_LIBS}
+    EXECNAME warehouse-isac
+    SOURCE_FILES warehouse-isac.cc
+    LIBRARIES_TO_LINK
+        ${libantenna}
+        ${libapplications}
+        ${libcore}
+        ${libenergy}
+        ${libflow-monitor}
+        ${libinternet}
+        ${libmobility}
+        ${libnr}
+        ${libpoint-to-point}
+        ${libpropagation}
+        ${libsionnart}
+        ${libspectrum}
+        ${libmqtt}
+        ${libwarehouse}
     EXECUTABLE_DIRECTORY_PATH
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scratch/warehouse-isac/
 )
 
 build_exec(
-    EXECNAME warehouse_no_isac
-    SOURCE_FILES main_no_isac.cc
-    LIBRARIES_TO_LINK ${WAREHOUSE_LIBS}
+    EXECNAME warehouse-no-isac
+    SOURCE_FILES warehouse-no-isac.cc
+    LIBRARIES_TO_LINK
+        ${libantenna}
+        ${libapplications}
+        ${libcore}
+        ${libenergy}
+        ${libflow-monitor}
+        ${libinternet}
+        ${libmobility}
+        ${libnr}
+        ${libpoint-to-point}
+        ${libpropagation}
+        ${libsionnart}
+        ${libspectrum}
+        ${libmqtt}
+        ${libwarehouse}
     EXECUTABLE_DIRECTORY_PATH
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/scratch/warehouse-isac/
 )

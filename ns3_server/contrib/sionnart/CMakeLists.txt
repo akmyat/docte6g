@@ -11,6 +11,7 @@ set(
     model/sionna-propagation-delay-model.cc
     model/sionna-spectrum-propagation-loss-model.cc
     model/sionna-phased-array-spectrum-propagation-loss-model.cc
+    model/sionna-isac-beam-steerer.cc
     model/cfr-tag.cc
 )
 
@@ -24,6 +25,7 @@ set(
     model/sionna-propagation-delay-model.h
     model/sionna-spectrum-propagation-loss-model.h
     model/sionna-phased-array-spectrum-propagation-loss-model.h
+    model/sionna-isac-beam-steerer.h
     model/cfr-tag.h
 )
 

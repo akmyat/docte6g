@@ -50,6 +50,7 @@ struct SionnaInitSettings {
     std::vector<std::string> tx_names;
     std::vector<int>         tx_ids;
     std::vector<Vector>      tx_locations;
+    std::vector<Vector>      tx_look_at;
     double                   tx_power = 46.0;
 
     std::vector<std::string> rx_names;
@@ -58,6 +59,8 @@ struct SionnaInitSettings {
 
     std::string rx_mesh; // path to .ply file; empty → use default
     std::vector<double> rx_speed; // m/s per receiver; empty → not passed
+    double rx_update_interval = 0.0;
+    double simulation_duration = 0.0;
     double cache_threshold_buffer = 1.1;
     double adaptive_future_horizon_seconds = 3.0;
     double adaptive_future_min_benefit_seconds = 1.0;
@@ -79,6 +82,7 @@ struct SionnaInitSettings {
     double isac_mti_dist_thresh   = 0.4;
     int    isac_tracker_min_age   = 2;
     int    isac_mti_warmup_frames = 0;
+    double isac_rx_scattering_coefficient = 0.5;
     std::string rx_type_path;   // ISAC radar mesh (.ply)
 };
 

@@ -195,6 +195,7 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
             settings["isac_mti_dist_thresh"]   = s.isac_mti_dist_thresh;
             settings["isac_tracker_min_age"]   = s.isac_tracker_min_age;
             settings["isac_mti_warmup_frames"] = s.isac_mti_warmup_frames;
+            settings["isac_rx_scattering_coefficient"] = s.isac_rx_scattering_coefficient;
             if (!s.rx_type_path.empty())
                 settings["rx_type_path"] = s.rx_type_path;
         }
@@ -208,6 +209,12 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
         settings["tx_names"]     = tx_names;
         settings["tx_ids"]       = tx_ids;
         settings["tx_locations"] = tx_locs;
+        if (!s.tx_look_at.empty()) {
+            py::list tx_look_at;
+            for (const auto& v : s.tx_look_at)
+                tx_look_at.append(VectorToPyList(v));
+            settings["tx_look_at"] = tx_look_at;
+        }
 
         py::list rx_names = py::cast(s.rx_names);
         py::list rx_ids   = py::cast(s.rx_ids);
@@ -221,6 +228,10 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
 
         if (!s.rx_speed.empty())
             settings["rx_speed"] = py::cast(s.rx_speed);
+        if (s.rx_update_interval > 0.0)
+            settings["rx_update_interval"] = s.rx_update_interval;
+        if (s.simulation_duration > 0.0)
+            settings["simulation_duration"] = s.simulation_duration;
 
         m_impl->m_sionnaInstance.attr("initialize")(settings);
         NS_LOG_INFO("SionnaRT.initialize() called successfully.");
