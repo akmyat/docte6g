@@ -14,6 +14,7 @@ class WarehouseCameraApp : public Application {
         
         void SetMqttClient(Ptr<MqttClientApp> mqttClient);
         void SetCameraId(const std::string& cameraId);
+        void StartStreaming(Ipv4Address ip, uint16_t port);
     
     protected:
         virtual void StartApplication(void) override;
@@ -29,10 +30,10 @@ class WarehouseCameraApp : public Application {
             bool retain,
             uint16_t packetId
         );
+        void OnMqttConnected(Ptr<const Packet> packet, uint8_t returnCode, bool sessionPresent);
         void Register();
         void PublishStatus();
 
-        void StartStreaming(Ipv4Address ip, uint16_t port);
         void StopStreaming();
         void SendData();
         void ConnectionSucceeded(Ptr<Socket> socket);

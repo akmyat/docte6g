@@ -70,6 +70,10 @@ WarehouseCameraApp::StartApplication()
     Register();
     if (m_mqttClient) {
         m_mqttClient->TraceConnectWithoutContext(
+            "ConnackReceived",
+            MakeCallback(&WarehouseCameraApp::OnMqttConnected, this)
+        );
+        m_mqttClient->TraceConnectWithoutContext(
             "PublishReceived",
             MakeCallback(&WarehouseCameraApp::OnMqttPublishReceived, this)
         );
@@ -77,6 +81,16 @@ WarehouseCameraApp::StartApplication()
         std::string commandTopic = "warehouse/camera/" + m_cameraId + "/command";
         m_mqttClient->Subscribe(commandTopic, 1);
     }
+}
+
+void
+WarehouseCameraApp::OnMqttConnected(Ptr<const Packet> packet, uint8_t returnCode, bool sessionPresent) {
+    if (returnCode != 0) {
+        return;
+    }
+
+    std::string commandTopic = "warehouse/camera/" + m_cameraId + "/command";
+    m_mqttClient->Subscribe(commandTopic, 1);
 }
 
 void
@@ -159,8 +173,20 @@ WarehouseCameraApp::PublishStatus() {
 
 void 
 WarehouseCameraApp::StartStreaming(Ipv4Address ip, uint16_t port) {
+    if (m_socket && m_targetIp == ip && m_targetPort == port) {
+        NS_LOG_INFO("Camera " << m_cameraId
+                    << " ignoring duplicate stream start for " << ip << ":" << port);
+        return;
+    }
+
     if (m_streaming) {
         StopStreaming();
+    } else if (m_socket) {
+        // A previous TCP connect is still pending for a different target.
+        // Close it before replacing the socket so FlowMonitor does not retain
+        // orphaned stream attempts.
+        m_socket->Close();
+        m_socket = nullptr;
     }
     
     m_targetIp = ip;
@@ -192,7 +218,7 @@ WarehouseCameraApp::ConnectionFailed(Ptr<Socket> socket) {
 
 void 
 WarehouseCameraApp::StopStreaming() {
-    if (m_streaming) {
+    if (m_streaming || m_socket) {
         NS_LOG_INFO("Camera " << m_cameraId << " stopping stream.");
         Simulator::Cancel(m_sendEvent);
         

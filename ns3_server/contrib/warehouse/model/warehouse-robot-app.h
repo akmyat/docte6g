@@ -17,6 +17,11 @@ class WarehouseRobotApp : public Application {
 
         void SetMqttClient(Ptr<MqttClientApp> mqttClient);
         void SetMobility(Ptr<MobilityModel> mobility);
+        uint32_t GetPickupCompleteCount() const;
+        uint32_t GetStoreCompleteCount() const;
+        uint32_t GetRetrieveCompleteCount() const;
+        uint32_t GetDropCompleteCount() const;
+        void ExecuteCommand(const std::string& payload);
 
     protected:
         virtual void StartApplication() override;
@@ -26,6 +31,7 @@ class WarehouseRobotApp : public Application {
         void Register();
         void OnMqttConnected(Ptr<const Packet> packet, uint8_t returnCode, bool sessionPresent);
         void PublishStatus(const std::string& status);
+        void PublishStatusIfCurrent(const std::string& status);
         void OnMqttPublishReceived(
             Ptr<const Packet> packet,
             const std::string& topic,
@@ -51,6 +57,10 @@ class WarehouseRobotApp : public Application {
     
     Vector m_lastPosition;
     uint32_t m_stuckCounter;
+    uint32_t m_pickupCompleteCount;
+    uint32_t m_storeCompleteCount;
+    uint32_t m_retrieveCompleteCount;
+    uint32_t m_dropCompleteCount;
 };
 
 } // namespace ns3

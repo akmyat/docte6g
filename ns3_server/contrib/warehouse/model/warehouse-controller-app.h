@@ -96,6 +96,8 @@ class WarehouseControllerApp : public Application {
         void ScheduleNextRetrievalCheck();
         void CheckRetrieval();
         void AssignTasks();
+        void CompleteStoreFallback(std::string robotId, std::string packageId, std::string rackId);
+        void DispatchDropFallback(std::string robotId, std::string packageId);
 
         Ptr<MqttClientApp> m_mqttClient;
         double m_retrievalProbability;

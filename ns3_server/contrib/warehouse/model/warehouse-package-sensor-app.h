@@ -26,6 +26,7 @@ class WarehousePackageSensorApp : public Application {
     
     Ptr<MqttClientApp> m_mqttClient;
     uint32_t m_checkInterval; // ms
+    double m_generationProbability;
     std::string m_sensorName;
     uint32_t m_packageIdCounter;
 

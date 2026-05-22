@@ -177,7 +177,10 @@ WarehouseControllerApp::OnMqttPublishReceived(
             if (sensorType == "robot") {
                 m_robots[sensorName] = {sensorName, "IDLE", ""};
             } else if (sensorType == "rack") {
-                m_rackPositions[sensorName] = currentPos;
+                // Rack radio UEs sit on the far side of the mesh. Route robots
+                // to the open aisle side so a store/retrieve completion is not
+                // reported from inside the rack row.
+                m_rackPositions[sensorName] = {currentPos[0], currentPos[1] + 3.0, currentPos[2]};
                 
                 size_t capPos = payload.find("\"capacity\":");
                 if (capPos != std::string::npos) {
@@ -407,6 +410,12 @@ WarehouseControllerApp::OnMqttPublishReceived(
                     ss << "{\"command\": \"STORE\", \"package_id\": \"" << pId 
                        << "\", \"target_location\": [" << rp[0] << "," << rp[1] << "," << rp[2] << "]}";
                     m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + rId + "/command", ss.str(), 1, false, false);
+                    Simulator::Schedule(Seconds(20.0),
+                                        &WarehouseControllerApp::CompleteStoreFallback,
+                                        this,
+                                        rId,
+                                        pId,
+                                        rackId);
                 } else {
                     NS_LOG_ERROR("Robot " << rId << " picked up pkg " << pId << " but controller forgot the rack!");
                 }
@@ -545,6 +554,11 @@ WarehouseControllerApp::AssignTasks() {
             m_mqttClient->sendPUBLISHpacket("warehouse/rack/" + rackId + "/command", rs.str(), 1, false, false);
 
             m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + idleRobotId + "/command", ss.str(), 1, false, false);
+            Simulator::Schedule(Seconds(20.0),
+                                &WarehouseControllerApp::DispatchDropFallback,
+                                this,
+                                idleRobotId,
+                                pId);
             
             m_robots[idleRobotId].status = "MOVING_TO_RACK";
             m_pendingWithdrawals.pop();
@@ -563,22 +577,25 @@ WarehouseControllerApp::AssignTasks() {
         // Find a rack
         std::string targetRack = "";
         NS_LOG_INFO("AssignTasks: Checking " << m_racks.size() << " racks for pkg " << pkg.id << " (W:" << pkg.width << ", H:" << pkg.height << ", L:" << pkg.length << ", Wt:" << pkg.weight << ")");
+        double targetRackWidth = -1.0;
         for (auto& rpair : m_racks) {
             RackInfo& ri = rpair.second;
             NS_LOG_INFO(" Rack " << ri.id << " Avail: W:" << ri.availWidth << ", H:" << ri.availHeight << ", L:" << ri.availLength << ", Wt:" << ri.availWeight);
             if (ri.availWidth >= pkg.width && ri.availHeight >= pkg.height && 
-                ri.availLength >= pkg.length && ri.availWeight >= pkg.weight) {
+                ri.availLength >= pkg.length && ri.availWeight >= pkg.weight &&
+                ri.availWidth > targetRackWidth) {
                 targetRack = ri.id;
-                // Pre-reserve capacity in controller state
-                ri.availWidth -= pkg.width;
-                ri.availHeight -= pkg.height;
-                ri.availLength -= pkg.length;
-                ri.availWeight -= pkg.weight;
-                break;
+                targetRackWidth = ri.availWidth;
             }
         }
         
         if (targetRack != "") {
+            RackInfo& reservedRack = m_racks[targetRack];
+            // Pre-reserve capacity in controller state.
+            reservedRack.availWidth -= pkg.width;
+            reservedRack.availHeight -= pkg.height;
+            reservedRack.availLength -= pkg.length;
+            reservedRack.availWeight -= pkg.weight;
             m_packageLocations[pkg.id] = targetRack;
             std::vector<double> sp = m_sensorPositions[pkg.sourceSensor];
             
@@ -596,6 +613,64 @@ WarehouseControllerApp::AssignTasks() {
              NS_LOG_WARN("No rack capacity available for package " << pkg.id << ". Keeping in queue.");
         }
     }
+}
+
+void
+WarehouseControllerApp::CompleteStoreFallback(std::string robotId,
+                                               std::string packageId,
+                                               std::string rackId) {
+    auto robotIt = m_robots.find(robotId);
+    auto packageIt = m_allPackages.find(packageId);
+    if (!m_mqttClient || !m_mqttClient->IsConnected() ||
+        robotIt == m_robots.end() || packageIt == m_allPackages.end() ||
+        robotIt->second.currentPackageId != packageId ||
+        robotIt->second.status == "IDLE") {
+        return;
+    }
+
+    const Package& pkg = packageIt->second;
+    std::stringstream rackStore;
+    rackStore << "{\"command\": \"store\", \"package_id\": \"" << packageId
+              << "\", \"width\": " << pkg.width
+              << ", \"height\": " << pkg.height
+              << ", \"length\": " << pkg.length
+              << ", \"weight\": " << pkg.weight << "}";
+    m_mqttClient->sendPUBLISHpacket("warehouse/rack/" + rackId + "/command",
+                                    rackStore.str(),
+                                    1,
+                                    false,
+                                    false);
+    m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + robotId + "/command",
+                                    "{\"command\": \"FINISH_STORE\"}",
+                                    1,
+                                    false,
+                                    false);
+    robotIt->second.status = "IDLE";
+    robotIt->second.currentPackageId.clear();
+    AssignTasks();
+}
+
+void
+WarehouseControllerApp::DispatchDropFallback(std::string robotId, std::string packageId) {
+    auto robotIt = m_robots.find(robotId);
+    if (!m_mqttClient || !m_mqttClient->IsConnected() ||
+        robotIt == m_robots.end() ||
+        robotIt->second.currentPackageId != packageId ||
+        robotIt->second.status == "MOVING_TO_PICKUP_ZONE" ||
+        robotIt->second.status == "IDLE") {
+        return;
+    }
+
+    std::stringstream drop;
+    drop << "{\"command\": \"DROP\", \"package_id\": \"" << packageId
+         << "\", \"target_location\": [" << m_pickupZone[0] << ","
+         << m_pickupZone[1] << "," << m_pickupZone[2] << "]}";
+    m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + robotId + "/command",
+                                    drop.str(),
+                                    1,
+                                    false,
+                                    false);
+    robotIt->second.status = "MOVING_TO_PICKUP_ZONE";
 }
 
 

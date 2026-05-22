@@ -31,12 +31,20 @@ WarehousePackageSensorApp::GetTypeId() {
             UintegerValue(1000),
             MakeUintegerAccessor(&WarehousePackageSensorApp::m_checkInterval),
             MakeUintegerChecker<uint32_t>()
+        )
+        .AddAttribute(
+            "GenerationProbability",
+            "Probability of package generation at each check",
+            DoubleValue(0.1),
+            MakeDoubleAccessor(&WarehousePackageSensorApp::m_generationProbability),
+            MakeDoubleChecker<double>(0.0, 1.0)
         );
     return tid;
 }
 
-WarehousePackageSensorApp::WarehousePackageSensorApp() 
-    : m_packageIdCounter(0) {
+WarehousePackageSensorApp::WarehousePackageSensorApp()
+    : m_generationProbability(0.1),
+      m_packageIdCounter(0) {
     m_probRv = CreateObject<UniformRandomVariable>();
     m_probRv->SetAttribute("Min", DoubleValue(0.0));
     m_probRv->SetAttribute("Max", DoubleValue(1.0));
@@ -108,8 +116,7 @@ WarehousePackageSensorApp::OnMqttConnected(Ptr<const Packet> packet, uint8_t ret
 void
 WarehousePackageSensorApp::CheckGeneratePackage() {
     if (m_mqttClient && m_mqttClient->IsConnected()) {
-        // 10% probability
-        if (m_probRv->GetValue() <= 0.1) {
+        if (m_probRv->GetValue() <= m_generationProbability) {
             std::string pkgId = "pkg_" + m_sensorName + "_" + std::to_string(m_packageIdCounter++);
             double width = m_dimRv->GetValue();
             double height = m_dimRv->GetValue();

@@ -39,7 +39,11 @@ WarehouseRobotApp::GetTypeId() {
 WarehouseRobotApp::WarehouseRobotApp() 
     : m_currentStatus("IDLE"),
       m_lastPosition(Vector(0,0,0)),
-      m_stuckCounter(0) {
+      m_stuckCounter(0),
+      m_pickupCompleteCount(0),
+      m_storeCompleteCount(0),
+      m_retrieveCompleteCount(0),
+      m_dropCompleteCount(0) {
 }
 
 WarehouseRobotApp::~WarehouseRobotApp() {}
@@ -52,6 +56,37 @@ WarehouseRobotApp::SetMqttClient(Ptr<MqttClientApp> mqttClient) {
 void
 WarehouseRobotApp::SetMobility(Ptr<MobilityModel> mobility) {
     m_mobility = mobility;
+}
+
+uint32_t
+WarehouseRobotApp::GetPickupCompleteCount() const {
+    return m_pickupCompleteCount;
+}
+
+uint32_t
+WarehouseRobotApp::GetStoreCompleteCount() const {
+    return m_storeCompleteCount;
+}
+
+uint32_t
+WarehouseRobotApp::GetRetrieveCompleteCount() const {
+    return m_retrieveCompleteCount;
+}
+
+uint32_t
+WarehouseRobotApp::GetDropCompleteCount() const {
+    return m_dropCompleteCount;
+}
+
+void
+WarehouseRobotApp::ExecuteCommand(const std::string& payload) {
+    OnMqttPublishReceived(Create<Packet>(),
+                          "warehouse/robot/" + m_sensorName + "/command",
+                          payload,
+                          1,
+                          false,
+                          false,
+                          0);
 }
 
 void
@@ -71,7 +106,9 @@ WarehouseRobotApp::StartApplication() {
         std::string topic = "warehouse/robot/" + m_sensorName + "/command";
         m_mqttClient->Subscribe(topic, 1);
     }
-    Register();
+    // Task dispatch is triggered by registration. Give the command
+    // subscription time to reach the broker before the controller replies.
+    Simulator::Schedule(MilliSeconds(250), &WarehouseRobotApp::Register, this);
 }
 
 void
@@ -100,8 +137,10 @@ void
 WarehouseRobotApp::OnMqttConnected(Ptr<const Packet> packet, uint8_t returnCode, bool sessionPresent) {
     NS_LOG_FUNCTION(this << (uint32_t)returnCode);
     if (returnCode == 0) {
-        NS_LOG_INFO(m_sensorName << " MQTT connected, triggering registration");
-        Register();
+        std::string topic = "warehouse/robot/" + m_sensorName + "/command";
+        m_mqttClient->Subscribe(topic, 1);
+        NS_LOG_INFO(m_sensorName << " MQTT connected, triggering command subscription and registration");
+        Simulator::Schedule(MilliSeconds(250), &WarehouseRobotApp::Register, this);
     }
 }
 
@@ -120,6 +159,13 @@ WarehouseRobotApp::PublishStatus(const std::string& status) {
         std::string outTopic = "warehouse/robot/" + m_sensorName + "/status";
         NS_LOG_INFO(m_sensorName << " publishing status: " << payload);
         m_mqttClient->sendPUBLISHpacket(outTopic, payload, 1, false, false);
+    }
+}
+
+void
+WarehouseRobotApp::PublishStatusIfCurrent(const std::string& status) {
+    if (m_currentStatus == status) {
+        PublishStatus(status);
     }
 }
 
@@ -174,11 +220,30 @@ WarehouseRobotApp::CheckArrival() {
     double dx = m_targetPosition.x - pos.x;
     double dy = m_targetPosition.y - pos.y;
     double distance2D = std::sqrt(dx*dx + dy*dy);
+    const double arrivalThreshold = 3.0;
 
-    if (distance2D <= 1.5) {
-        NS_LOG_INFO(m_sensorName << " arrived at destination (distance " << distance2D << "m <= 1.5m).");
+    if (distance2D <= arrivalThreshold) {
+        NS_LOG_INFO(m_sensorName << " arrived at destination (distance " << distance2D
+                    << "m <= " << arrivalThreshold << "m).");
         m_currentStatus = m_completionStatus;
+        if (m_currentStatus == "PICKUP_COMPLETE") {
+            ++m_pickupCompleteCount;
+        } else if (m_currentStatus == "STORE_COMPLETE") {
+            ++m_storeCompleteCount;
+        } else if (m_currentStatus == "RETRIEVE_COMPLETE") {
+            ++m_retrieveCompleteCount;
+        } else if (m_currentStatus == "DROP_COMPLETE") {
+            ++m_dropCompleteCount;
+        }
         PublishStatus(m_currentStatus);
+        Simulator::Schedule(MilliSeconds(500),
+                            &WarehouseRobotApp::PublishStatusIfCurrent,
+                            this,
+                            m_currentStatus);
+        Simulator::Schedule(MilliSeconds(1000),
+                            &WarehouseRobotApp::PublishStatusIfCurrent,
+                            this,
+                            m_currentStatus);
         m_stuckCounter = 0;
     } else {
         // Stall detection
