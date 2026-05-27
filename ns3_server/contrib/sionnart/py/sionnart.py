@@ -32,7 +32,7 @@ except ImportError:
 
 # ------------------- START of ISAC helpers -------------------
 class KalmanFilter3D:
-    def __init__(self, initial_state, dt=1.0):
+    def __init__(self, initial_state, dt=1.0, Q_val=0.5, R_val=0.05):
         self.x = np.array([initial_state[0], initial_state[1], initial_state[2],
                            0.0, 0.0, 0.0]).reshape(6, 1)
         self.start_pos = np.asarray(initial_state, dtype=float).copy()
@@ -41,11 +41,12 @@ class KalmanFilter3D:
         self.H = np.zeros((3, 6))
         self.H[0, 0] = 1; self.H[1, 1] = 1; self.H[2, 2] = 1
         self.P = np.eye(6) * 5.0
-        self.Q = np.eye(6) * 0.1
-        self.R = np.eye(3) * 1.0
+        self.Q = np.eye(6) * Q_val
+        self.R = np.eye(3) * R_val
         self.missed_frames = 0
         self.age = 1
         self._confirmed = False
+        self.updated_this_frame = True
 
     def predict(self):
         self.x = self.F @ self.x
@@ -68,34 +69,40 @@ class KalmanFilter3D:
 
     def is_confirmed(self, min_age, min_dist):
         if not self._confirmed:
-            if self.age >= min_age and self.get_total_displacement() > min_dist:
+            if self.age >= min_age and self.get_total_displacement() >= min_dist:
                 self._confirmed = True
         return self._confirmed
 
 
 class Tracker:
-    def __init__(self, max_missed=3, min_age_for_output=3, min_displacement=0.3, max_tracks=10):
+    def __init__(self, max_missed=3, min_age_for_output=3, min_displacement=0.3, max_tracks=10, dt=1.0, Q_val=0.5, R_val=0.05):
         self.tracks = []
         self.max_missed = max_missed
         self.min_age = min_age_for_output
         self.min_dist = min_displacement
         self.max_tracks = max_tracks
+        self.dt = dt
+        self.Q_val = Q_val
+        self.R_val = R_val
 
     def process_frame(self, detections):
         predictions = [t.predict() for t in self.tracks]
         unmatched = set(range(len(detections)))
+        for t in self.tracks:
+            t.updated_this_frame = False
 
         if self.tracks and detections:
             cost = np.zeros((len(self.tracks), len(detections)))
             for i, p in enumerate(predictions):
                 for j, d in enumerate(detections):
                     cost[i, j] = np.linalg.norm(p - d['position'])
-            MAX_COST = 10.0
+            MAX_COST = 3.0
             cost[cost > MAX_COST] = 1000.0
             row_ind, col_ind = linear_sum_assignment(cost)
             for i, j in zip(row_ind, col_ind):
                 if cost[i, j] < MAX_COST:
                     self.tracks[i].update(detections[j]['position'])
+                    self.tracks[i].updated_this_frame = True
                     unmatched.discard(j)
                 else:
                     self.tracks[i].missed_frames += 1
@@ -108,7 +115,7 @@ class Tracker:
 
         for j in unmatched:
             if len(self.tracks) < self.max_tracks:
-                self.tracks.append(KalmanFilter3D(detections[j]['position']))
+                self.tracks.append(KalmanFilter3D(detections[j]['position'], dt=self.dt, Q_val=self.Q_val, R_val=self.R_val))
 
         self.tracks = [t for t in self.tracks if t.missed_frames < self.max_missed]
 
@@ -143,10 +150,9 @@ class CloudMTI:
         if len(erp_pts) == 0:
             return erp_pts, powers
         if self.background_map is None:
-            # Not explicitly primed — capture this frame as the background but
-            # *also* pass it through so the first frame is not silently dropped.
-            # Subsequent frames will be MTI-filtered normally.
-            self.background_map = erp_pts.copy()
+            # Do not learn the background from a live sensing frame: that frame
+            # contains targets and would make MTI suppress true positives. The
+            # notebook primes MTI explicitly with target-free clutter frames.
             return erp_pts, powers
         tree = cKDTree(self.background_map)
         dists, _ = tree.query(erp_pts)
@@ -498,6 +504,7 @@ class SionnaRT:
         self.isac_min_displacement = 0.3
         self.isac_max_depth = 3
         self.isac_diffuse_reflection = True
+        self.isac_static_clutter_scattering = 0.0
         self.isac_samples_per_src = 1_000_000
         self.isac_single_bounce_only = True
         self.isac_phase_center_offset = 0.0
@@ -515,6 +522,7 @@ class SionnaRT:
         self._beam_epoch = 0
         self._beam_active = False
         self.detection_history = []
+        self.raw_detection_history = []
 
     def _perf_add(self, name: str, value: float):
         self.perf_stats[name] = float(self.perf_stats.get(name, 0.0)) + float(value)
@@ -662,6 +670,12 @@ class SionnaRT:
             self.isac_diffuse_reflection = bool(
                 sim_settings.get("isac_diffuse_reflection", self.isac_diffuse_reflection)
             )
+            self.isac_static_clutter_scattering = float(
+                sim_settings.get(
+                    "isac_static_clutter_scattering",
+                    self.isac_static_clutter_scattering,
+                )
+            )
             self.isac_samples_per_src = int(
                 sim_settings.get("isac_samples_per_src", self.isac_samples_per_src)
             )
@@ -675,7 +689,10 @@ class SionnaRT:
                 sim_settings.get("isac_mti_warmup_frames", self.isac_mti_warmup_frames)
             )
             self.isac_mti_dist_thresh = float(
-                sim_settings.get("isac_mti_dist_thresh", self.isac_mti_dist_thresh)
+                sim_settings.get(
+                    "isac_mti_dist_thresh",
+                    sim_settings.get("isac_mti_dist_threshold", self.isac_mti_dist_thresh),
+                )
             )
             self.isac_tracker_min_age = int(
                 sim_settings.get("isac_tracker_min_age", self.isac_tracker_min_age)
@@ -726,15 +743,30 @@ class SionnaRT:
                               "min_power": self.isac_min_power,
                               "bbox_size": np.array([1.0, 1.0, 1.0])}
 
+            dt = float(sim_settings.get("rx_update_interval", 0.1))
+            Q_val = float(sim_settings.get("isac_tracker_q", 0.5))
+            R_val = float(sim_settings.get("isac_tracker_r", 0.05))
+            max_missed = int(sim_settings.get("isac_tracker_max_missed", 2))
+            max_tracks = int(
+                sim_settings.get(
+                    "isac_tracker_max_tracks",
+                    max(10, len(self.receivers)),
+                )
+            )
             self.mti_filter = CloudMTI(dist_thresh=self.isac_mti_dist_thresh)
             self.tracker = Tracker(
-                max_missed=3,
+                max_missed=max_missed,
                 min_age_for_output=self.isac_tracker_min_age,
                 min_displacement=self.isac_min_displacement,
+                max_tracks=max_tracks,
+                dt=dt,
+                Q_val=Q_val,
+                R_val=R_val,
             )
             self._beam_epoch = 0
             self._beam_active = False
             self.detection_history = []
+            self.raw_detection_history = []
 
         self._perf_add("python_initialize_seconds", time.perf_counter() - init_start)
 
@@ -1067,8 +1099,25 @@ class SionnaRT:
                     "pwr": float(np.asarray(tx_obj.power_dbm).ravel()[0]),
                 }
 
+        clutter_scattering = float(getattr(self, "isac_static_clutter_scattering", 0.0))
+        orig_scattering = {}
+        if clutter_scattering > 0.0:
+            for obj_name, obj in list(self.scene.objects.items()):
+                if obj_name.startswith("rx_obj_"):
+                    continue
+                try:
+                    mat = obj.radio_material
+                    if mat is None:
+                        continue
+                    orig_s = float(np.asarray(mat.scattering_coefficient).ravel()[0])
+                    if orig_s < clutter_scattering:
+                        orig_scattering[obj_name] = orig_s
+                        mat.scattering_coefficient = clutter_scattering
+                except Exception:
+                    pass
+
         try:
-            sensing_depth = max(int(self.isac_max_depth), 3)
+            sensing_depth = max(int(self.isac_max_depth), 1)
             all_erp = []
             all_pwr = []
 
@@ -1127,12 +1176,17 @@ class SionnaRT:
                         self.scene.add(Receiver(name=name, position=pos,
                                                 color=[1, 0, 1], display_radius=0.2))
         finally:
+            for obj_name, orig_s in orig_scattering.items():
+                try:
+                    self.scene.objects[obj_name].radio_material.scattering_coefficient = orig_s
+                except Exception:
+                    pass
             for name, pos in comm_rx_snapshot.items():
                 self.scene.add(Receiver(name=name, position=pos,
                                         color=[0, 1, 0], display_radius=0.5))
 
         if not all_erp:
-            return self.tracker.process_frame([])
+            return [], self.tracker.process_frame([])
 
         ERP = np.vstack(all_erp)
         PWR = np.concatenate(all_pwr)
@@ -1141,20 +1195,21 @@ class SionnaRT:
             ERP, PWR = self.mti_filter.filter(ERP, PWR)
 
         if len(ERP) == 0:
-            return self.tracker.process_frame([])
+            return [], self.tracker.process_frame([])
 
         labels = DBSCAN(eps=self.calib["eps_cluster"], min_samples=2).fit(ERP).labels_
         ids = sorted(set(labels) - {-1})
-        max_targets = max(4, len(getattr(self, "receivers", {})))
         raw = []
         for k in ids:
             m = labels == k
             best_idx = np.argmax(PWR[m])
             raw.append({"position": ERP[m][best_idx], "power": float(PWR[m].sum())})
         raw.sort(key=lambda x: x["power"], reverse=True)
-        detections = [{"id": i, "position": r["position"], "power": r["power"]}
-                      for i, r in enumerate(raw[:max_targets])]
-        return self.tracker.process_frame(detections)
+        raw_detections = [{"id": i, "position": r["position"], "power": r["power"]}
+                          for i, r in enumerate(raw)]
+        max_tracker_inputs = max(4, len(getattr(self, "receivers", {})))
+        tracker_detections = raw_detections[:max_tracker_inputs]
+        return raw_detections, self.tracker.process_frame(tracker_detections)
 
     def prime_mti_background(self, n_frames: int = 3) -> None:
         """Seed the MTI background with static-clutter-only frames.
@@ -1244,7 +1299,7 @@ class SionnaRT:
                     paths = self.path_solver(
                         scene=self.scene,
                         samples_per_src=int(self.isac_samples_per_src),
-                        max_depth=max(int(self.isac_max_depth), 3),
+                        max_depth=max(int(self.isac_max_depth), 1),
                         los=True, specular_reflection=True,
                         diffuse_reflection=bool(self.isac_diffuse_reflection),
                         edge_diffraction=False, refraction=False,
@@ -1309,9 +1364,12 @@ class SionnaRT:
             # Restore robot mesh objects
             rx_mesh_path = getattr(self, "_rx_mesh_path", None)
             for obj_name, saved_pos in rx_obj_snapshot.items():
+                obj_present = False
                 try:
-                    self.scene.get(obj_name)  # already present → no-op
+                    obj_present = self.scene.get(obj_name) is not None
                 except Exception:
+                    obj_present = False
+                if not obj_present:
                     if rx_mesh_path:
                         rx_mat = RadioMaterial(
                             "rx_material", relative_permittivity=1.0,
@@ -1363,6 +1421,12 @@ class SionnaRT:
         if since_time < 0.0:
             return list(self.detection_history)
         return [r for r in self.detection_history if r["time"] >= since_time]
+
+    def get_raw_detected_objects(self, since_time: float = -1.0):
+        """Return logged raw DBSCAN detections at or after ``since_time``; -1 returns all."""
+        if since_time < 0.0:
+            return list(self.raw_detection_history)
+        return [r for r in self.raw_detection_history if r["time"] >= since_time]
     # ------------------- END of ISAC pipeline -------------------
 
     def perform_calculation(self, _current_time: float):
@@ -1382,7 +1446,7 @@ class SionnaRT:
                 self.scene.rx_array = self._radar_rx_array
                 radar_names = self._install_radar_receivers()
                 try:
-                    tracks = self._run_sensing_solve()
+                    raw_detections, tracks = self._run_sensing_solve()
                 finally:
                     self._remove_radar_receivers(radar_names)
                     self.scene.rx_array = comm_rx_array_backup
@@ -1392,6 +1456,10 @@ class SionnaRT:
                     "time": float(_current_time),
                     "positions": [pos.tolist() if hasattr(pos, "tolist") else list(pos)
                                   for pos in tracks],
+                })
+                self.raw_detection_history.append({
+                    "time": float(_current_time),
+                    "positions": [pos["position"].tolist() if hasattr(pos["position"], "tolist") else list(pos["position"]) for pos in raw_detections],
                 })
 
                 if tracks:
