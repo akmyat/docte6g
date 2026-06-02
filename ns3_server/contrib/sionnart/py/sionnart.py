@@ -14,7 +14,11 @@ import drjit as dr
 from sionna.rt import load_scene, PlanarArray, Transmitter, Receiver
 from sionna.rt import PathSolver, subcarrier_frequencies, InteractionType
 from sionna.rt import RadioMaterial, SceneObject, AntennaPattern
-from sionna.rt.antenna_pattern import antenna_pattern_registry
+from sionna.rt.antenna_pattern import (
+    PolarizedAntennaPattern,
+    antenna_pattern_registry,
+    v_tr38901_pattern,
+)
 from sionna.rt.utils import r_hat
 from sionna.phy import SPEED_OF_LIGHT
 
@@ -387,11 +391,14 @@ _PATTERN_REGISTERED = False
 class BeamformingPattern(AntennaPattern):
     """Multi-lobe antenna pattern that steers Gaussian beams toward detected targets."""
 
-    def __init__(self, target_angles, width_deg=15.0):
+    def __init__(self, target_angles, width_deg=15.0, polarization="V"):
         super().__init__()
         self.target_angles = target_angles
         self.width_deg = width_deg
-        self._patterns = [self._make_pattern(target_angles, width_deg)]
+        self._patterns = PolarizedAntennaPattern(
+            v_pattern=self._make_pattern(target_angles, width_deg),
+            polarization=polarization,
+        ).patterns
 
     @staticmethod
     def _make_pattern(target_angles, width_deg):
@@ -405,10 +412,12 @@ class BeamformingPattern(AntennaPattern):
                 r_t = r_hat(th_t, ph_t)
                 cos_angle = dr.clip(r.x * r_t.x + r.y * r_t.y + r.z * r_t.z, -1.0, 1.0)
                 gain += dr.exp(-0.5 * dr.acos(cos_angle) ** 2 / var)
-            pattern_linear_gain = dr.maximum(gain, 1e-6) * 6.30957
-            c_theta = mi.Complex2f(dr.sqrt(pattern_linear_gain), 0.0)
-            c_phi = dr.zeros(mi.Complex2f, dr.width(theta))
-            return c_theta, c_phi
+            baseline = v_tr38901_pattern(theta, phi)
+            baseline_linear_gain = dr.squared_norm(baseline)
+            # Preserve the communication pattern away from sensed targets and
+            # apply at most 6 dB of sensing-assisted directional improvement.
+            pattern_linear_gain = baseline_linear_gain * (1.0 + 3.0 * dr.minimum(gain, 1.0))
+            return mi.Complex2f(dr.sqrt(pattern_linear_gain), 0.0)
         return pattern
 
     @property
@@ -416,7 +425,7 @@ class BeamformingPattern(AntennaPattern):
         return self._patterns
 
     @staticmethod
-    def from_positions(radar_position, detected_positions, width_deg=15.0):
+    def from_positions(radar_position, detected_positions, width_deg=15.0, polarization="V"):
         radar_pos = np.asarray(radar_position, dtype=float)
         angles = []
         for pos in detected_positions:
@@ -429,7 +438,7 @@ class BeamformingPattern(AntennaPattern):
             angles.append((theta, phi))
         if not angles:
             angles = [(np.pi / 2, 0.0)]
-        return BeamformingPattern(angles, width_deg=width_deg)
+        return BeamformingPattern(angles, width_deg=width_deg, polarization=polarization)
 
     def to_planar_array(self, num_rows, num_cols, spacing, polarization="V"):
         global _ACTIVE_PATTERN
@@ -453,7 +462,7 @@ class BeamformingPattern(AntennaPattern):
                 global _ACTIVE_PATTERN
                 if _ACTIVE_PATTERN is not None:
                     return _ACTIVE_PATTERN
-                return cls([(np.pi / 2, 0.0)])
+                return cls([(np.pi / 2, 0.0)], polarization=kwargs.get("polarization", "V"))
             antenna_pattern_registry.register(name=name, obj=factory)
             _PATTERN_REGISTERED = True
         except Exception:
@@ -473,6 +482,7 @@ class SionnaRT:
         )
         self.max_depth = 3
         self.diffuse_reflection = False
+        self.comm_static_clutter_scattering = 0.0
         # Cache coherence parameters must match C++ SionnaPropagationCache attributes.
         # delta = alpha * d * 0.886 / tx_num_cols; step_dist = delta * buffer.
         self.coherence_alpha = 0.4
@@ -545,6 +555,27 @@ class SionnaRT:
         num_subcarriers = sim_settings.get("num_subcarriers", 3276)
         subcarrier_spacing = sim_settings.get("subcarrier_spacing", 30000)
         self.coherence_tx_num_cols = sim_settings.get("tx_num_cols", self.coherence_tx_num_cols)
+        self.max_depth = int(sim_settings.get("comm_max_depth", self.max_depth))
+        self.diffuse_reflection = bool(
+            sim_settings.get("comm_diffuse_reflection", self.diffuse_reflection)
+        )
+        self.comm_static_clutter_scattering = float(
+            sim_settings.get(
+                "comm_static_clutter_scattering",
+                self.comm_static_clutter_scattering,
+            )
+        )
+
+        if self.diffuse_reflection and self.comm_static_clutter_scattering > 0.0:
+            for obj in self.scene.objects.values():
+                try:
+                    mat = obj.radio_material
+                    if mat is not None:
+                        scattering = float(np.asarray(mat.scattering_coefficient).ravel()[0])
+                        if scattering < self.comm_static_clutter_scattering:
+                            mat.scattering_coefficient = self.comm_static_clutter_scattering
+                except Exception:
+                    pass
 
         freqs = subcarrier_frequencies(num_subcarriers, subcarrier_spacing) + f_c
         self.export_frequencies = np.asarray(freqs)
@@ -821,6 +852,31 @@ class SionnaRT:
     def clear_virtual_receivers(self, prefix="vrx_"):
         for name in [n for n in list(self.receivers.keys()) if n.startswith(prefix)]:
             self.remove_receiver(name)
+
+    def _hide_rx_mesh_objects(self):
+        snapshot = {}
+        for name in list(getattr(self, "receivers", {}).keys()):
+            obj_name = f"rx_obj_{name}"
+            if obj_name in self.scene.objects:
+                snapshot[obj_name] = (
+                    np.asarray(self.scene.objects[obj_name].position).ravel().tolist()
+                )
+        if snapshot:
+            self.scene.edit(remove=list(snapshot.keys()))
+        return snapshot
+
+    def _restore_rx_mesh_objects(self, snapshot):
+        if not snapshot:
+            return
+        rx_mesh_path = getattr(self, "_rx_mesh_path", None)
+        if not rx_mesh_path:
+            return
+        self.scene.edit(add=[
+            SceneObject(name=obj_name, fname=rx_mesh_path, radio_material=self.rx_material)
+            for obj_name in snapshot
+        ])
+        for obj_name, position in snapshot.items():
+            self.scene.objects[obj_name].position = position
 
     @staticmethod
     def round_point(point, ndigits=4):
@@ -1227,16 +1283,7 @@ class SionnaRT:
             return
 
         # Stash and remove all robot mesh objects
-        rx_obj_snapshot = {}
-        for name in list(getattr(self, "receivers", {}).keys()):
-            obj_name = f"rx_obj_{name}"
-            try:
-                obj = self.scene.get(obj_name)
-                if obj is not None:
-                    rx_obj_snapshot[obj_name] = np.asarray(obj.position).ravel().tolist()
-                    self.scene.remove(obj_name)
-            except Exception:
-                pass
+        rx_obj_snapshot = self._hide_rx_mesh_objects()
 
         # Remove comm receivers so the solve is radar-only
         comm_rx_snapshot = {}
@@ -1362,28 +1409,7 @@ class SionnaRT:
                 except Exception:
                     pass
             # Restore robot mesh objects
-            rx_mesh_path = getattr(self, "_rx_mesh_path", None)
-            for obj_name, saved_pos in rx_obj_snapshot.items():
-                obj_present = False
-                try:
-                    obj_present = self.scene.get(obj_name) is not None
-                except Exception:
-                    obj_present = False
-                if not obj_present:
-                    if rx_mesh_path:
-                        rx_mat = RadioMaterial(
-                            "rx_material", relative_permittivity=1.0,
-                            conductivity=1e10,
-                            scattering_coefficient=float(
-                                getattr(self, "_rx_scattering", 0.5)))
-                        try:
-                            self.scene.edit(add=[SceneObject(
-                                name=obj_name, fname=rx_mesh_path,
-                                radio_material=rx_mat)])
-                            self.scene.get(obj_name).position = saved_pos
-                        except Exception as exc2:
-                            print(f"[MTI-prime] could not restore {obj_name}: {exc2}",
-                                  flush=True)
+            self._restore_rx_mesh_objects(rx_obj_snapshot)
 
     def _build_multilobe_tx_array(self, tracks):
         gnb_pos = self.radar_tx_pos
@@ -1391,13 +1417,9 @@ class SionnaRT:
             radar_position=gnb_pos,
             detected_positions=tracks,
             width_deg=self.beamwidth_deg,
+            polarization=self._comm_tx_polarization,
         )
-        # Use single polarization for the multi-lobe pattern; this changes
-        # mimo_tx_elems if the comm array was VH. To keep MIMO shape constant
-        # we mirror the comm polarization (the pattern is applied per element).
         polarization = self._comm_tx_polarization
-        # If polarization is dual ("VH") the multi-lobe factory still works;
-        # Sionna will replicate the pattern across both polarizations.
         return bf.to_planar_array(
             num_rows=self._comm_tx_num_rows,
             num_cols=self._comm_tx_num_cols,
@@ -1493,9 +1515,11 @@ class SionnaRT:
                 self.add_receiver(vrx_name, point, rx_id=self.receivers.get(rx_name))
                 created.append(vrx_name)
 
+        rx_mesh_snapshot = self._hide_rx_mesh_objects()
         try:
             records = self.calculate_propagation()
         finally:
+            self._restore_rx_mesh_objects(rx_mesh_snapshot)
             for name in created:
                 self.remove_receiver(name)
 

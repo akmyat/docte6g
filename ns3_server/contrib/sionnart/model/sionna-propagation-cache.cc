@@ -49,6 +49,16 @@ SionnaPropagationCache::GetTypeId() {
                 BooleanValue(true),
                 MakeBooleanAccessor(&SionnaPropagationCache::m_enableWeakLinkFastPath),
                 MakeBooleanChecker())
+            .AddAttribute("EnableFriisFallback",
+                "Use Friis when Sionna does not return a propagation record.",
+                BooleanValue(true),
+                MakeBooleanAccessor(&SionnaPropagationCache::m_enableFriisFallback),
+                MakeBooleanChecker())
+            .AddAttribute("EnableMimoCsi",
+                "Use element-level Sionna MIMO CFR instead of normalized scalar fading with ns-3 analog beamforming.",
+                BooleanValue(true),
+                MakeBooleanAccessor(&SionnaPropagationCache::m_enableMimoCsi),
+                MakeBooleanChecker())
             .AddAttribute("WeakLinkThresholdDbm",
                 "Estimated rx power below which Friis is substituted for Sionna.",
                 DoubleValue(-95.0),
@@ -81,6 +91,8 @@ SionnaPropagationCache::SionnaPropagationCache()
       m_txNumCols(8),
       m_minDelta(0.1),
       m_enableWeakLinkFastPath(true),
+      m_enableFriisFallback(true),
+      m_enableMimoCsi(true),
       m_weakLinkThresholdDbm(-95.0),
       m_weakLinkMarginDb(6.0),
       m_friisLossModel(CreateObject<FriisPropagationLossModel>()),
@@ -305,6 +317,12 @@ SionnaPropagationCache::RefreshSnapshot(double currentTimeSeconds) const
     NS_LOG_DEBUG("RefreshSnapshot: populated " << m_cache.size() << " cache entries.");
 }
 
+void
+SionnaPropagationCache::ForceRefreshSnapshot(double currentTimeSeconds) const
+{
+    RefreshSnapshot(currentTimeSeconds);
+}
+
 // ------------------------------------------------------------------ weak-link fast path
 
 bool
@@ -455,6 +473,18 @@ SionnaPropagationCache::GetPropagationDataRef(Ptr<const MobilityModel> a,
         return it->second.front();
     }
 
+    if (!m_enableFriisFallback)
+    {
+        NS_LOG_WARN("Failed to get Sionna propagation data for link ("
+                    << idA << "," << idB << ") at t=" << Simulator::Now().GetSeconds()
+                    << "s; Friis fallback is disabled, returning blocked-link sentinel.");
+        static const CacheEntry kMissingSionnaRecord(
+            Seconds(0), 200.0, 0, false,
+            0, Vector(), 0, Vector(),
+            std::numeric_limits<double>::max());
+        return kMissingSionnaRecord;
+    }
+
     NS_LOG_WARN("Failed to get Sionna propagation data for link ("
                 << idA << "," << idB << ") at t=" << Simulator::Now().GetSeconds()
                 << "s; using Friis/constant-speed fallback for this lookup.");
@@ -533,7 +563,7 @@ SionnaPropagationCache::ResolveMimoLinkContext(
     Ptr<const PhasedArrayModel> rxPhasedArrayModel,
     MimoLinkContext& context) const
 {
-    if (entry.m_mimoCfr.empty() || !txPhasedArrayModel || !rxPhasedArrayModel)
+    if (!m_enableMimoCsi || entry.m_mimoCfr.empty() || !txPhasedArrayModel || !rxPhasedArrayModel)
     {
         return false;
     }

@@ -181,6 +181,9 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
         settings["adaptive_future_direction_dot_threshold"] = s.adaptive_future_direction_dot_threshold;
         settings["synthetic_array"] = s.m_syntheticArray;
         settings["enable_fast_path"] = s.m_enableFastPath;
+        settings["comm_max_depth"] = s.comm_max_depth;
+        settings["comm_diffuse_reflection"] = s.comm_diffuse_reflection;
+        settings["comm_static_clutter_scattering"] = s.comm_static_clutter_scattering;
 
         if (s.enable_situation_awareness) {
             settings["enable_situation_awareness"] = s.enable_situation_awareness;

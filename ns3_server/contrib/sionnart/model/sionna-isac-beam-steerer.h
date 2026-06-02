@@ -43,6 +43,9 @@ class SionnaIsacBeamSteerer : public Object
     // Register transmitter nodes (gNB / AP). Beams on these nodes are steered.
     void AddTxNode(Ptr<Node> txNode);
 
+    // Register the phased array used by a transmitter node.
+    void SetTxPhasedArray(Ptr<Node> txNode, Ptr<PhasedArrayModel> array);
+
     // Register receiver nodes. Pass ALL UEs; the steerer filters by ISAC detection.
     void AddRxNode(Ptr<Node> rxNode);
 
@@ -78,6 +81,7 @@ class SionnaIsacBeamSteerer : public Object
 
     std::vector<Ptr<Node>> m_txNodes;
     std::vector<Ptr<Node>> m_rxNodes;
+    std::map<uint32_t, Ptr<PhasedArrayModel>> m_txPhasedArrays;
 
     Time     m_pollInterval;
     double   m_matchRadius;

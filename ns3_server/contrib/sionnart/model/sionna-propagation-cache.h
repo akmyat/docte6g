@@ -63,6 +63,7 @@ class SionnaPropagationCache : public Object {
         std::vector<double>  GetPropagationFreq (Ptr<const MobilityModel> a, Ptr<const MobilityModel> b) const;
         const std::vector<double>& GetPropagationFreqRef(Ptr<const MobilityModel> a, Ptr<const MobilityModel> b) const;
         bool   GetIsLos(Ptr<const MobilityModel> a, Ptr<const MobilityModel> b) const;
+        void ForceRefreshSnapshot(double currentTimeSeconds) const;
 
         // Statistics
         void     PrintStats() const;
@@ -280,6 +281,8 @@ class SionnaPropagationCache : public Object {
 
         // weak-link fast path
         bool   m_enableWeakLinkFastPath  = true;
+        bool   m_enableFriisFallback     = true;
+        bool   m_enableMimoCsi            = true;
         double m_weakLinkThresholdDbm    = -95.0;
         double m_weakLinkMarginDb        = 6.0;
 

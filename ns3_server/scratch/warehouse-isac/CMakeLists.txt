@@ -1,6 +1,8 @@
 build_exec(
     EXECNAME warehouse-isac
-    SOURCE_FILES warehouse-isac.cc
+    SOURCE_FILES
+        warehouse-isac-main.cc
+        warehouse-scenario.cc
     LIBRARIES_TO_LINK
         ${libantenna}
         ${libapplications}
@@ -22,7 +24,9 @@ build_exec(
 
 build_exec(
     EXECNAME warehouse-no-isac
-    SOURCE_FILES warehouse-no-isac.cc
+    SOURCE_FILES
+        warehouse-no-isac-main.cc
+        warehouse-scenario.cc
     LIBRARIES_TO_LINK
         ${libantenna}
         ${libapplications}

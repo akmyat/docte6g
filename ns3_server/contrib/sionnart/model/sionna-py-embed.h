@@ -68,6 +68,9 @@ struct SionnaInitSettings {
     double adaptive_future_direction_dot_threshold = 0.7;
     bool m_syntheticArray = true;
     bool m_enableFastPath = true;
+    int comm_max_depth = 3;
+    bool comm_diffuse_reflection = false;
+    double comm_static_clutter_scattering = 0.0;
 
     // ISAC settings
     bool enable_situation_awareness = false;

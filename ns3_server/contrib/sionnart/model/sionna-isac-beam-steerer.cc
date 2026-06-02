@@ -77,6 +77,14 @@ SionnaIsacBeamSteerer::AddTxNode(Ptr<Node> txNode)
 }
 
 void
+SionnaIsacBeamSteerer::SetTxPhasedArray(Ptr<Node> txNode, Ptr<PhasedArrayModel> array)
+{
+    NS_ASSERT_MSG(txNode, "SetTxPhasedArray: null node");
+    NS_ASSERT_MSG(array, "SetTxPhasedArray: null array");
+    m_txPhasedArrays[txNode->GetId()] = array;
+}
+
+void
 SionnaIsacBeamSteerer::AddRxNode(Ptr<Node> rxNode)
 {
     NS_ASSERT_MSG(rxNode, "AddRxNode: null node");
@@ -184,12 +192,15 @@ SionnaIsacBeamSteerer::FindNearest(const Vector& pos, double radius) const
 Ptr<PhasedArrayModel>
 SionnaIsacBeamSteerer::GetPhasedArray(Ptr<Node> node) const
 {
+    auto registered = m_txPhasedArrays.find(node->GetId());
+    if (registered != m_txPhasedArrays.end())
+    {
+        return registered->second;
+    }
+
     for (uint32_t i = 0; i < node->GetNDevices(); ++i) {
         Ptr<NetDevice> dev = node->GetDevice(i);
         if (!dev) continue;
-        Ptr<Object> antenna = dev->GetObject<Object>();
-        if (!antenna) continue;
-        // Walk aggregated objects looking for PhasedArrayModel
         Ptr<PhasedArrayModel> arr = dev->GetObject<PhasedArrayModel>();
         if (arr) return arr;
     }

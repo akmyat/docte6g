@@ -7,11 +7,17 @@
 #include "ns3/nr-gnb-energy-model.h"
 #include "ns3/nr-helper.h"
 #include "ns3/nr-spectrum-phy.h"
+#include "ns3/nr-ue-phy.h"
 #include "ns3/nr-ue-energy-model.h"
 #include "ns3/sionna-py-embed.h"
+#include "ns3/sionna-phased-array-spectrum-propagation-loss-model.h"
+#include "ns3/sionna-propagation-cache.h"
 
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -43,6 +49,31 @@ struct MobilityTraceEntry
     Vector position;
 };
 
+struct CqiFeedbackStats
+{
+    uint64_t samples{0};
+    double sumCqi{0.0};
+    double sumMcs{0.0};
+    double sumRank{0.0};
+    double sumEstimatedSinrDb{0.0};
+    double minEstimatedSinrDb{std::numeric_limits<double>::infinity()};
+    double maxEstimatedSinrDb{-std::numeric_limits<double>::infinity()};
+    uint8_t minMcs{255};
+    uint8_t maxMcs{0};
+    uint8_t minRank{255};
+    uint8_t maxRank{0};
+};
+
+struct SinrStats
+{
+    uint64_t samples{0};
+    double sumSinrLinear{0.0};
+    double minSinrLinear{std::numeric_limits<double>::infinity()};
+    double maxSinrLinear{0.0};
+    uint16_t cellId{0};
+    uint16_t bwpId{0};
+};
+
 struct SummaryConfig
 {
     std::string scenarioName;
@@ -70,7 +101,9 @@ struct SummaryConfig
     uint16_t ueHorizontalPorts{0};
     uint16_t ueVerticalPorts{0};
     uint16_t mimoRankLimit{0};
+    bool useElementMimoCsi{false};
     bool dualPolarized{false};
+    bool nrDigitalDualPolarized{false};
     double gnbTxPowerDbm{0.0};
     double ueTxPowerDbm{0.0};
     Vector gnbPosition;
@@ -78,11 +111,19 @@ struct SummaryConfig
     std::string tddPattern;
     double ueSpeedMps{0.0};
     double rxUpdateIntervalSec{0.0};
+    double isacSensingFrameIntervalSec{0.0};
     std::vector<Vector> packageSensorPositions;
     std::vector<Vector> rackSensorPositions;
     std::vector<Vector> robotStartPositions;
     std::vector<Vector> videoClientPositions;
     std::vector<uint16_t> robotVideoPorts;
+    bool enableChallengeTraffic{false};
+    bool enableChallengeUl{true};
+    bool fixedMcsUl{true};
+    uint32_t startingMcsUl{0};
+    uint32_t challengePacketIntervalUs{0};
+    uint32_t challengeUlPacketIntervalUs{0};
+    uint32_t challengePacketSizeBytes{0};
     uint32_t mobileRobotUeStartIndex{0};
     uint32_t detectionCount{0};
     double isacSensingPowerW{0.0};
@@ -93,6 +134,68 @@ static std::vector<PropagationTraceEntry> g_propagationTrace;
 static std::map<std::pair<uint32_t, uint32_t>, Time> g_lastPropagationRecord;
 static std::vector<MobilityTraceEntry> g_mobilityTrace;
 static NodeContainer g_mobilityNodes;
+static std::map<uint16_t, CqiFeedbackStats> g_cqiFeedbackStats;
+static std::map<uint16_t, SinrStats> g_sinrStats;
+
+static double
+GetEstimatedSinrFromCqiDb(uint8_t cqi)
+{
+    static const std::array<double, 16> cqiToSinrDb = {
+        -std::numeric_limits<double>::infinity(), -6.7, -4.7, -2.3,
+        0.2, 2.4, 4.3, 5.9, 8.1, 10.3, 11.7, 14.1, 16.3, 18.7, 21.0, 22.7};
+    return cqi < cqiToSinrDb.size() ? cqiToSinrDb[cqi] : cqiToSinrDb.back();
+}
+
+static void
+OnCqiFeedbackTrace(uint16_t rnti, uint8_t cqi, uint8_t mcs, uint8_t rank)
+{
+    auto& stats = g_cqiFeedbackStats[rnti];
+    const double estimatedSinrDb = GetEstimatedSinrFromCqiDb(cqi);
+    ++stats.samples;
+    stats.sumCqi += cqi;
+    stats.sumMcs += mcs;
+    stats.sumRank += rank;
+    if (std::isfinite(estimatedSinrDb))
+    {
+        stats.sumEstimatedSinrDb += estimatedSinrDb;
+        stats.minEstimatedSinrDb = std::min(stats.minEstimatedSinrDb, estimatedSinrDb);
+        stats.maxEstimatedSinrDb = std::max(stats.maxEstimatedSinrDb, estimatedSinrDb);
+    }
+    stats.minMcs = std::min(stats.minMcs, mcs);
+    stats.maxMcs = std::max(stats.maxMcs, mcs);
+    stats.minRank = std::min(stats.minRank, rank);
+    stats.maxRank = std::max(stats.maxRank, rank);
+}
+
+static void
+OnDlDataSinrTrace(uint16_t cellId, uint16_t rnti, double sinrLinear, uint16_t bwpId)
+{
+    if (!std::isfinite(sinrLinear) || sinrLinear <= 0.0)
+    {
+        return;
+    }
+    auto& stats = g_sinrStats[rnti];
+    ++stats.samples;
+    stats.sumSinrLinear += sinrLinear;
+    stats.minSinrLinear = std::min(stats.minSinrLinear, sinrLinear);
+    stats.maxSinrLinear = std::max(stats.maxSinrLinear, sinrLinear);
+    stats.cellId = cellId;
+    stats.bwpId = bwpId;
+}
+
+static void
+AttachUeRadioTraces(const NetDeviceContainer& ueDevices)
+{
+    for (auto it = ueDevices.Begin(); it != ueDevices.End(); ++it)
+    {
+        Ptr<NrUePhy> uePhy = NrHelper::GetUePhy(*it, 0);
+        if (uePhy)
+        {
+            uePhy->TraceConnectWithoutContext("CqiFeedbackTrace", MakeCallback(&OnCqiFeedbackTrace));
+            uePhy->TraceConnectWithoutContext("DlDataSinr", MakeCallback(&OnDlDataSinrTrace));
+        }
+    }
+}
 
 class EnergyTracker : public Object
 {
@@ -354,6 +457,92 @@ ExportMobilityTrace(const std::string& path)
 }
 
 static void
+ExportSionnaPerfStats(const std::string& path,
+                      Ptr<SionnaPropagationCache> cache,
+                      Ptr<SionnaPhasedArraySpectrumPropagationLossModel> phasedModel)
+{
+    std::ofstream file(path);
+    file << "Component,Metric,Value\n";
+    if (cache)
+    {
+        cache->AppendPerfStats(file);
+    }
+    if (phasedModel)
+    {
+        phasedModel->AppendPerfStats(file);
+    }
+}
+
+static void
+ExportCqiFeedbackStats(const std::string& path)
+{
+    std::ofstream file(path);
+    file << "Rnti,Samples,MeanCqi,MeanMcs,MinMcs,MaxMcs,MeanRank,MinRank,MaxRank\n";
+    for (const auto& [rnti, stats] : g_cqiFeedbackStats)
+    {
+        if (stats.samples == 0)
+        {
+            continue;
+        }
+        const double samples = static_cast<double>(stats.samples);
+        file << rnti << "," << stats.samples << ","
+             << stats.sumCqi / samples << "," << stats.sumMcs / samples << ","
+             << static_cast<uint32_t>(stats.minMcs) << ","
+             << static_cast<uint32_t>(stats.maxMcs) << ","
+             << stats.sumRank / samples << ","
+             << static_cast<uint32_t>(stats.minRank) << ","
+             << static_cast<uint32_t>(stats.maxRank) << "\n";
+    }
+}
+
+static void
+ExportRadioLinkStats(const std::string& path)
+{
+    std::ofstream file(path);
+    auto toDb = [](double value) {
+        return value > 0.0 ? 10.0 * std::log10(value)
+                           : -std::numeric_limits<double>::infinity();
+    };
+    file << "Rnti,CqiSamples,DlDataSinrSamples,CellId,BwpId,MeanCqi,MeanMcs,MinMcs,MaxMcs,"
+            "MeanRank,MinRank,MaxRank,MeanDlDataSinrLinear,MeanDlDataSinr_dB,"
+            "MinDlDataSinr_dB,MaxDlDataSinr_dB,MeanEstimatedSinrFromCqi_dB,"
+            "MinEstimatedSinrFromCqi_dB,MaxEstimatedSinrFromCqi_dB\n";
+    std::set<uint16_t> rntis;
+    for (const auto& [rnti, _] : g_cqiFeedbackStats) rntis.insert(rnti);
+    for (const auto& [rnti, _] : g_sinrStats) rntis.insert(rnti);
+    for (const auto rnti : rntis)
+    {
+        const auto cqiIt = g_cqiFeedbackStats.find(rnti);
+        const auto sinrIt = g_sinrStats.find(rnti);
+        const CqiFeedbackStats* cqi =
+            cqiIt != g_cqiFeedbackStats.end() ? &cqiIt->second : nullptr;
+        const SinrStats* sinr = sinrIt != g_sinrStats.end() ? &sinrIt->second : nullptr;
+        const double cqiSamples = cqi ? static_cast<double>(cqi->samples) : 0.0;
+        const double meanSinr = (sinr && sinr->samples > 0)
+                                    ? sinr->sumSinrLinear / static_cast<double>(sinr->samples)
+                                    : 0.0;
+        file << rnti << "," << (cqi ? cqi->samples : 0) << ","
+             << (sinr ? sinr->samples : 0) << "," << (sinr ? sinr->cellId : 0) << ","
+             << (sinr ? sinr->bwpId : 0) << ","
+             << ((cqi && cqi->samples > 0) ? cqi->sumCqi / cqiSamples : 0.0) << ","
+             << ((cqi && cqi->samples > 0) ? cqi->sumMcs / cqiSamples : 0.0) << ","
+             << ((cqi && cqi->samples > 0) ? static_cast<uint32_t>(cqi->minMcs) : 0) << ","
+             << ((cqi && cqi->samples > 0) ? static_cast<uint32_t>(cqi->maxMcs) : 0) << ","
+             << ((cqi && cqi->samples > 0) ? cqi->sumRank / cqiSamples : 0.0) << ","
+             << ((cqi && cqi->samples > 0) ? static_cast<uint32_t>(cqi->minRank) : 0) << ","
+             << ((cqi && cqi->samples > 0) ? static_cast<uint32_t>(cqi->maxRank) : 0) << ","
+             << meanSinr << "," << toDb(meanSinr) << ","
+             << ((sinr && sinr->samples > 0) ? toDb(sinr->minSinrLinear) : 0.0) << ","
+             << ((sinr && sinr->samples > 0) ? toDb(sinr->maxSinrLinear) : 0.0) << ","
+             << ((cqi && cqi->samples > 0) ? cqi->sumEstimatedSinrDb / cqiSamples : 0.0) << ","
+             << ((cqi && cqi->samples > 0 && std::isfinite(cqi->minEstimatedSinrDb))
+                     ? cqi->minEstimatedSinrDb : 0.0) << ","
+             << ((cqi && cqi->samples > 0 && std::isfinite(cqi->maxEstimatedSinrDb))
+                     ? cqi->maxEstimatedSinrDb : 0.0) << "\n";
+    }
+}
+
+static void
 ExportPowerConsumptionStats(const std::string& path,
                             const std::vector<Ptr<EnergyTracker>>& trackers,
                             double simTimeSec,
@@ -456,6 +645,7 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "antenna_pattern: " << config.sionnaSettings.pattern << "\n";
     file << "polarization: " << config.sionnaSettings.polarization << "\n";
     file << "dual_polarized: " << config.dualPolarized << "\n";
+    file << "nr_digital_dual_polarized: " << config.nrDigitalDualPolarized << "\n";
     file << "gnb_array_rows: " << config.gnbAntennaRows << "\n";
     file << "gnb_array_cols: " << config.gnbAntennaCols << "\n";
     file << "ue_array_rows: " << config.ueAntennaRows << "\n";
@@ -465,14 +655,19 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "ue_horizontal_ports: " << config.ueHorizontalPorts << "\n";
     file << "ue_vertical_ports: " << config.ueVerticalPorts << "\n";
     file << "mimo_rank_limit: " << config.mimoRankLimit << "\n";
+    file << "use_element_mimo_csi: " << config.useElementMimoCsi << "\n";
+    file << "ideal_analog_array_gain: " << !config.useElementMimoCsi << "\n";
     file << "gnb_position: ";
     WriteVector(file, config.gnbPosition);
     file << "\n";
     file << "gnb_look_at: ";
     WriteVector(file, config.gnbLookAt);
     file << "\n";
-    file << "channel_propagation_loss: ns3::FriisPropagationLossModel\n";
-    file << "channel_propagation_delay: ns3::ConstantSpeedPropagationDelayModel\n";
+    file << "channel_propagation_loss: ns3::SionnaPropagationLossModel\n";
+    file << "channel_propagation_delay: ns3::SionnaPropagationDelayModel\n";
+    file << "channel_phased_array_spectrum_loss: ns3::SionnaPhasedArraySpectrumPropagationLossModel\n";
+    file << "channel_weak_link_friis_fast_path: disabled\n";
+    file << "channel_missing_record_friis_fallback: disabled\n";
     file << "nr_dl_error_model: ns3::NrEesmIrT2\n";
     file << "nr_ul_error_model: ns3::NrEesmIrT2\n";
     file << "nr_amc_model: ns3::NrAmc::ErrorModel\n";
@@ -481,8 +676,10 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "scheduler_enable_srs_f_slots: true\n";
     file << "scheduler_enable_harq_retx: true\n";
     file << "scheduler_ul_ctrl_symbols: 2\n";
-    file << "scheduler_fixed_mcs_ul: true\n";
-    file << "scheduler_starting_mcs_ul: 0\n";
+    file << "scheduler_fixed_mcs_ul: " << config.fixedMcsUl << "\n";
+    file << "scheduler_starting_mcs_ul: " << config.startingMcsUl << "\n";
+    file << "beamforming_method: ns3::DirectPathBeamforming\n";
+    file << "beamforming_periodicity_s: 1\n";
     file << "tdd_pattern: " << config.tddPattern << "\n";
     file << "rlc_um_max_tx_buffer_size: 999999999\n\n";
 
@@ -524,6 +721,15 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "video_client_names: videoclient1, videoclient2, videoclient3\n";
     file << "robot_camera_frame_size_bytes: 300\n";
     file << "robot_camera_fps: 2\n";
+    file << "radio_challenge_traffic_enabled: " << config.enableChallengeTraffic << "\n";
+    file << "radio_challenge_uplink_enabled: " << config.enableChallengeUl << "\n";
+    file << "radio_challenge_packet_size_bytes: " << config.challengePacketSizeBytes << "\n";
+    file << "radio_challenge_dl_packet_interval_us: " << config.challengePacketIntervalUs << "\n";
+    file << "radio_challenge_ul_packet_interval_us: " << config.challengeUlPacketIntervalUs << "\n";
+    file << "radio_challenge_static_dl_ports: 12000-12002\n";
+    file << "radio_challenge_robot_dl_ports: 13000-13002\n";
+    file << "radio_challenge_static_ul_ports: 14000-14002\n";
+    file << "radio_challenge_robot_ul_ports: 15000-15002\n";
     file << "robot_video_ports:";
     for (const auto port : config.robotVideoPorts)
     {
@@ -562,6 +768,10 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "sionna_rx_mesh: " << config.sionnaSettings.rx_mesh << "\n";
     file << "sionna_rx_type_path: " << config.sionnaSettings.rx_type_path << "\n";
     file << "sionna_simulation_duration_s: " << config.sionnaSettings.simulation_duration << "\n";
+    file << "comm_max_depth: " << config.sionnaSettings.comm_max_depth << "\n";
+    file << "comm_diffuse_reflection: " << config.sionnaSettings.comm_diffuse_reflection << "\n";
+    file << "comm_static_clutter_scattering: "
+         << config.sionnaSettings.comm_static_clutter_scattering << "\n";
     file << "enable_situation_awareness: "
          << config.sionnaSettings.enable_situation_awareness << "\n";
     file << "isac_detection_count: " << config.detectionCount << "\n";
@@ -579,15 +789,26 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "isac_rx_scattering_coefficient: "
          << config.sionnaSettings.isac_rx_scattering_coefficient << "\n";
     file << "isac_sensing_frame_interval_s: "
-         << (config.isacEnabled ? config.rxUpdateIntervalSec : 0.0) << "\n\n";
+         << (config.isacEnabled ? config.isacSensingFrameIntervalSec : 0.0) << "\n\n";
 
     file << "Result Artifacts\n";
     file << "----------------\n";
     file << "flow_stats.csv\n";
     file << "propagation_stats.csv\n";
+    file << "mimo_channel_gain_stats.csv\n";
+    file << "cqi_feedback_stats.csv\n";
+    file << "radio_link_stats.csv\n";
+    file << "sionna_perf_stats.csv\n";
     file << "power_consumption_stats.csv\n";
     file << "sensing_stats.csv\n";
     file << "mobility_trace.csv\n";
+    file << "mqtt_stats.csv\n";
+    file << "ue_mqtt_stats.csv\n";
+    file << "package_sensor_mqtt_stats.csv\n";
+    file << "environment_sensor_mqtt_stats.csv\n";
+    file << "rack_sensor_mqtt_stats.csv\n";
+    file << "robot_mqtt_video_stats.csv\n";
+    file << "robot_task_stats.csv\n";
     file << "summary.txt\n";
 }
 
@@ -596,9 +817,20 @@ KeepRequestedResultCsvs(const std::string& outputDir)
 {
     const std::set<std::string> keep = {"flow_stats.csv",
                                         "propagation_stats.csv",
+                                        "mimo_channel_gain_stats.csv",
+                                        "cqi_feedback_stats.csv",
+                                        "radio_link_stats.csv",
+                                        "sionna_perf_stats.csv",
                                         "power_consumption_stats.csv",
                                         "sensing_stats.csv",
-                                        "mobility_trace.csv"};
+                                        "mobility_trace.csv",
+                                        "mqtt_stats.csv",
+                                        "ue_mqtt_stats.csv",
+                                        "package_sensor_mqtt_stats.csv",
+                                        "environment_sensor_mqtt_stats.csv",
+                                        "rack_sensor_mqtt_stats.csv",
+                                        "robot_mqtt_video_stats.csv",
+                                        "robot_task_stats.csv"};
     for (const auto& entry : std::filesystem::directory_iterator(outputDir))
     {
         if (entry.is_regular_file() && entry.path().extension() == ".csv" &&

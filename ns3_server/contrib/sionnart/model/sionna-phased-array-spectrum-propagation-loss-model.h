@@ -177,6 +177,7 @@ class SionnaPhasedArraySpectrumPropagationLossModel : public PhasedArraySpectrum
                                      double& outputPsdSum) const;
 
     Ptr<SionnaPropagationCache> m_propagationCache;
+    bool m_enableIdealAnalogArrayGain{false};
     mutable std::map<std::pair<uint32_t, uint32_t>, BeamformingStats> m_beamformingStats;
     mutable PerfStats m_perfStats;
 };

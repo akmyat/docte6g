@@ -22,6 +22,7 @@
 #include "sionna-mobility-model.h"
 
 #include <ns3/double.h>
+#include <ns3/boolean.h>
 #include <ns3/log.h>
 #include <ns3/node.h>
 #include <ns3/object-factory.h>
@@ -234,7 +235,13 @@ SionnaPhasedArraySpectrumPropagationLossModel::GetTypeId()
         TypeId("ns3::SionnaPhasedArraySpectrumPropagationLossModel")
             .SetParent<PhasedArraySpectrumPropagationLossModel>()
             .SetGroupName("Sionna")
-            .AddConstructor<SionnaPhasedArraySpectrumPropagationLossModel>();
+            .AddConstructor<SionnaPhasedArraySpectrumPropagationLossModel>()
+            .AddAttribute("EnableIdealAnalogArrayGain",
+                "Use coherent sub-array gain for normalized scalar Sionna fading.",
+                BooleanValue(false),
+                MakeBooleanAccessor(
+                    &SionnaPhasedArraySpectrumPropagationLossModel::m_enableIdealAnalogArrayGain),
+                MakeBooleanChecker());
             //.AddAttribute(
             //    "ChannelConditionModel",
             //    "Pointer to the channel condition model.",
@@ -464,7 +471,10 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
                                             outputPsdSum);
             }
             m_perfStats.psdUpdateSeconds += ElapsedSeconds(psdStart);
-            if (inputPsdSum > 0.0 && outputPsdSum > 0.0 && std::isfinite(outputPsdSum))
+            if (params->txPhy &&
+                inputPsdSum > 0.0 &&
+                outputPsdSum > 0.0 &&
+                std::isfinite(outputPsdSum))
             {
                 RecordChannelGain(aId,
                                   bId,
@@ -479,6 +489,11 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
     }
 
     double bfGain = CalcBeamformingGain(a, b, aPhasedArrayModel, bPhasedArrayModel);
+    if (m_enableIdealAnalogArrayGain)
+    {
+        bfGain = static_cast<double>(aPhasedArrayModel->GetNumElemsPerPort()) *
+                 static_cast<double>(bPhasedArrayModel->GetNumElemsPerPort());
+    }
     if (!std::isfinite(bfGain))
     {
         NS_LOG_WARN("Non-finite Sionna beamforming gain on link " << aId << " -> " << bId
@@ -486,6 +501,15 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
         bfGain = 1.0;
     }
     bfGain = std::max(0.0, bfGain);
+    if (params->txPhy && bfGain > 0.0)
+    {
+        RecordChannelGain(aId,
+                          bId,
+                          bfGain,
+                          aPhasedArrayModel->GetNumPorts(),
+                          bPhasedArrayModel->GetNumPorts(),
+                          rxParams->psd->GetValuesN());
+    }
     // Apply the above terms to the TX PSD
     *(rxParams->psd) *= bfGain;
 
@@ -507,6 +531,24 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
                 ++idx;
             }
         }
+    }
+
+    if (!rxParams->spectrumChannelMatrix &&
+        aPhasedArrayModel->GetNumPorts() == 1 &&
+        bPhasedArrayModel->GetNumPorts() == 1)
+    {
+        // NrSpectrumPhy's generic fallback reconstructs a normalized channel
+        // as sqrt(rxPsd / txPsd). The MIMO SINR processor consumes the matrix
+        // directly, so that fallback removes transmit-power sensitivity.
+        // Preserve the complete scalar link budget after path loss, analog
+        // array gain, and normalized CFR have all been applied.
+        Ptr<ComplexMatrixArray> channel =
+            Create<ComplexMatrixArray>(1, 1, rxParams->psd->GetValuesN());
+        for (uint32_t rbIdx = 0; rbIdx < rxParams->psd->GetValuesN(); ++rbIdx)
+        {
+            channel->Elem(0, 0, rbIdx) = std::sqrt(std::max(0.0, (*rxParams->psd)[rbIdx]));
+        }
+        rxParams->spectrumChannelMatrix = channel;
     }
 
     m_perfStats.doCalcRxPsdSeconds += ElapsedSeconds(calcStart);

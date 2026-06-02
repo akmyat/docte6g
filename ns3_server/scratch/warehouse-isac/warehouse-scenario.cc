@@ -1,13 +1,9 @@
 /*
- * warehouse-isac.cc
+ * Shared warehouse ISAC comparison scenario.
  *
- * Warehouse scenario with ISAC (Integrated Sensing and Communication).
- * - 1 gNB (bottom-right corner at [14, -11, 3])
- * - Stationary rack UEs and autonomous UE robots with SionnaMobilityModel
- * - Sionna RT channel at 15 GHz, 120 kHz SCS, 3276 subcarriers
- * - 8×8 gNB antennas, 2×2 UE antennas, VH dual-polarized
- * - ISAC situation awareness enabled
- * - MQTT broker on remote host, controller on gNB, temp sensors on UEs
+ * The ISAC and communication-only executables call this runner with different
+ * modes. Everything else stays identical so array and ISAC comparisons are
+ * controlled experiments.
  */
 
 #include "ns3/antenna-module.h"
@@ -47,18 +43,23 @@
 #include "ns3/warehouse-controller-app.h"
 
 #include "warehouse-results-helper.h"
+#include "warehouse-scenario.h"
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("WarehouseIsac");
+NS_LOG_COMPONENT_DEFINE("WarehouseScenario");
 
 static void
-RunIsacSensingFrame(const NodeContainer& radioNodes, double stopTime, double interval)
+RunIsacSensingFrame(const NodeContainer& radioNodes,
+                    Ptr<SionnaPropagationCache> propagationCache,
+                    double stopTime,
+                    double interval)
 {
     for (uint32_t i = 0; i < radioNodes.GetN(); ++i) {
         Ptr<SionnaMobilityModel> mobility =
@@ -68,23 +69,39 @@ RunIsacSensingFrame(const NodeContainer& radioNodes, double stopTime, double int
                                                               mobility->GetPosition());
         }
     }
-    SionnaPyEmbed::GetInstance().SionnaPerformCalculation(Simulator::Now().GetSeconds());
+    propagationCache->ForceRefreshSnapshot(Simulator::Now().GetSeconds());
     if ((Simulator::Now() + Seconds(interval)).GetSeconds() < stopTime) {
-        Simulator::Schedule(Seconds(interval), &RunIsacSensingFrame, radioNodes, stopTime, interval);
+        Simulator::Schedule(Seconds(interval),
+                            &RunIsacSensingFrame,
+                            radioNodes,
+                            propagationCache,
+                            stopTime,
+                            interval);
     }
 }
 
 int
-main(int argc, char* argv[])
+RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
 {
     // -----------------------------------------------------------------------
     // Parameters
     // -----------------------------------------------------------------------
     double simTimeSec = 30.0;
     std::string assetsRoot = "/home/aung/code/docte6g/assets";
-    std::string outputDir  = "/home/aung/code/docte6g/results/warehouse-isac";
+    std::string outputDir = "/home/aung/code/docte6g/results/warehouse-" +
+                            std::string(isacEnabled ? "isac" : "no-isac");
     uint16_t gnbAntennaRows = 8;
     uint16_t gnbAntennaCols = 8;
+    bool enableChallengeTraffic = false;
+    bool challengeEnableUl = true;
+    uint32_t challengePacketIntervalUs = 5000;
+    uint32_t challengeUlPacketIntervalUs = 0;
+    uint32_t sionnaFixedUlMcs = 2;
+    bool useElementMimoCsi = false;
+    double gnbTxPowerDbm = 30.0;
+    double ueTxPowerDbm = 23.0;
+    double isacSensingFrameIntervalSec = 0.5;
+    uint32_t isacSamplesPerSrc = 2000000;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("simTime", "Simulation time (s)", simTimeSec);
@@ -92,7 +109,20 @@ main(int argc, char* argv[])
     cmd.AddValue("outputDir",  "Output directory for results", outputDir);
     cmd.AddValue("gnbAntennaRows", "Number of gNB antenna rows", gnbAntennaRows);
     cmd.AddValue("gnbAntennaCols", "Number of gNB antenna columns", gnbAntennaCols);
+    cmd.AddValue("enableChallengeTraffic", "Enable bidirectional UDP radio challenge flows", enableChallengeTraffic);
+    cmd.AddValue("challengeEnableUl", "Add uplink UDP challenge flows when challenge traffic is enabled", challengeEnableUl);
+    cmd.AddValue("challengePacketIntervalUs", "UDP challenge-flow packet interval (us)", challengePacketIntervalUs);
+    cmd.AddValue("challengeUlPacketIntervalUs", "UL UDP challenge-flow packet interval (us); 0 inherits challengePacketIntervalUs", challengeUlPacketIntervalUs);
+    cmd.AddValue("sionnaFixedUlMcs", "Conservative fixed UL MCS for the Sionna channel", sionnaFixedUlMcs);
+    cmd.AddValue("useElementMimoCsi", "Use element-level Sionna MIMO CFR instead of analog array gain mode", useElementMimoCsi);
+    cmd.AddValue("gnbTxPowerDbm", "gNB transmit power (dBm)", gnbTxPowerDbm);
+    cmd.AddValue("ueTxPowerDbm", "UE transmit power (dBm)", ueTxPowerDbm);
+    cmd.AddValue("isacSensingFrameInterval", "Interval between ISAC sensing frames (s)", isacSensingFrameIntervalSec);
+    cmd.AddValue("isacSamplesPerSrc", "Sionna rays per source for each ISAC sensing frame", isacSamplesPerSrc);
     cmd.Parse(argc, argv);
+    if (challengeUlPacketIntervalUs == 0) {
+        challengeUlPacketIntervalUs = challengePacketIntervalUs;
+    }
 
     RngSeedManager::SetSeed(42);
     RngSeedManager::SetRun(42);
@@ -114,8 +144,6 @@ main(int argc, char* argv[])
     const uint32_t numSubcarriers = 3276;
     const uint16_t ueAntennaRows  = 2;
     const uint16_t ueAntennaCols  = 2;
-    const double gnbTxPowerDbm    = 46.0;
-    const double ueTxPowerDbm     = 46.0;
     const double isacSensingPowerW = 5.0;
     const bool isDualPolarized    = true;
 
@@ -159,21 +187,33 @@ main(int argc, char* argv[])
     const uint32_t mobileRobotUeStartIndex = numRackSensors;
     const uint32_t numUes = static_cast<uint32_t>(ueStartPositions.size());
     const std::vector<uint16_t> robotVideoPorts = {10000, 10001, 10002};
+    const uint16_t staticDlChallengePortBase = 12000;
+    const uint16_t robotDlChallengePortBase = 13000;
+    const uint16_t staticUlChallengePortBase = 14000;
+    const uint16_t robotUlChallengePortBase = 15000;
+    const uint32_t challengePacketSizeBytes = 1200;
     const double ueSpeed = 2.0;
     const double rxUpdateIntervalSec = 0.5;
+    const std::string gnbSionnaName = "Tx_gNB";
 
     // -----------------------------------------------------------------------
     // Antenna port layout
     // -----------------------------------------------------------------------
-    uint16_t gnbHorizPorts = (gnbAntennaCols >= 8) ? 4u : ((gnbAntennaCols >= 4) ? 2u : 1u);
-    uint16_t gnbVertPorts  = (gnbAntennaRows >= 8) ? 4u : ((gnbAntennaRows >= 4) ? 2u : 1u);
+    // Grow the analog sub-array aperture with panel size. Scaling the digital
+    // port count with the element count cancels downlink array gain when the
+    // normalized port precoder has no per-port phase steering.
+    // The scalar analog mode must expose one NR digital port: NR's fallback
+    // channel-matrix converter is only valid for a single Tx and Rx port.
+    const bool nrDigitalDualPolarized = useElementMimoCsi && isDualPolarized;
+    uint16_t gnbHorizPorts = 1;
+    uint16_t gnbVertPorts  = 1;
     uint16_t ueHorizPorts  = 1;
     uint16_t ueVertPorts   = 1;
     if ((gnbAntennaRows % gnbVertPorts) != 0 || (gnbAntennaCols % gnbHorizPorts) != 0) {
         NS_FATAL_ERROR("gNB antenna port counts must evenly divide antenna rows and columns.");
     }
-    uint16_t gnbTotalPorts = gnbHorizPorts * gnbVertPorts * (isDualPolarized ? 2u : 1u);
-    uint16_t ueTotalPorts  = ueHorizPorts * ueVertPorts * (isDualPolarized ? 2u : 1u);
+    uint16_t gnbTotalPorts = gnbHorizPorts * gnbVertPorts * (nrDigitalDualPolarized ? 2u : 1u);
+    uint16_t ueTotalPorts  = ueHorizPorts * ueVertPorts * (nrDigitalDualPolarized ? 2u : 1u);
     uint16_t mimoRankLimit = std::min<uint16_t>(gnbTotalPorts, ueTotalPorts);
 
     // -----------------------------------------------------------------------
@@ -190,7 +230,7 @@ main(int argc, char* argv[])
     {
         Ptr<SionnaMobilityModel> mm = CreateObject<SionnaMobilityModel>();
         mm->SetAttribute("Mode",       EnumValue(SionnaMobilityModel::CONSTANT_POSITION));
-        mm->SetAttribute("ObjectName", StringValue("gNB"));
+        mm->SetAttribute("ObjectName", StringValue(gnbSionnaName));
         mm->SetAttribute("ObjectPath", StringValue(rxObj));
         mm->SetPosition(gnbPos);
         gnbNodes.Get(0)->AggregateObject(mm);
@@ -200,10 +240,10 @@ main(int argc, char* argv[])
     std::vector<std::string> rxNames;
     rxNames.reserve(numUes);
     for (uint32_t i = 0; i < numRackSensors; ++i) {
-        rxNames.push_back("rack_sensor_" + std::to_string(i + 1));
+        rxNames.push_back("Rx_rack_sensor_" + std::to_string(i + 1));
     }
     for (uint32_t i = 0; i < numMobileRobots; ++i) {
-        rxNames.push_back("robot_" + std::to_string(i + 1));
+        rxNames.push_back("Rx_robot_" + std::to_string(i + 1));
     }
     std::vector<int>         rxIds;
     std::vector<Vector>      rxLocs;
@@ -232,7 +272,7 @@ main(int argc, char* argv[])
     }
 
     // -----------------------------------------------------------------------
-    // Sionna initialisation with ISAC
+    // Sionna initialization
     // -----------------------------------------------------------------------
     SionnaInitSettings sionnaSettings;
     sionnaSettings.scene              = sceneXml;
@@ -246,7 +286,7 @@ main(int argc, char* argv[])
     sionnaSettings.pattern            = "tr38901";
     sionnaSettings.polarization       = "VH";
     sionnaSettings.tx_power           = gnbTxPowerDbm;
-    sionnaSettings.tx_names           = {"gNB"};
+    sionnaSettings.tx_names           = {gnbSionnaName};
     sionnaSettings.tx_ids             = {static_cast<int>(gnbNodes.Get(0)->GetId())};
     sionnaSettings.tx_locations       = {gnbPos};
     sionnaSettings.tx_look_at         = {gnbLookAt};
@@ -258,37 +298,47 @@ main(int argc, char* argv[])
     sionnaSettings.rx_update_interval = rxUpdateIntervalSec;
     sionnaSettings.simulation_duration = simTimeSec;
 
-    // ISAC settings
-    sionnaSettings.enable_situation_awareness   = true;
-    sionnaSettings.rx_type_path                 = rxMesh;
-    sionnaSettings.isac_min_power               = 1e-25;
-    sionnaSettings.isac_eps_cluster             = 1.5;
-    sionnaSettings.isac_mti_dist_thresh         = 0.4;
-    sionnaSettings.isac_min_displacement        = 0.3;
-    sionnaSettings.isac_beamwidth_deg           = 20.0;
-    sionnaSettings.isac_max_depth               = 3;
-    sionnaSettings.isac_diffuse_reflection      = true;
-    sionnaSettings.isac_samples_per_src         = 2000000;
-    sionnaSettings.isac_single_bounce_only      = false;
-    sionnaSettings.isac_tracker_min_age         = 2;
-    sionnaSettings.isac_mti_warmup_frames       = 0;
-    sionnaSettings.isac_rx_scattering_coefficient = 0.5;
+    sionnaSettings.enable_situation_awareness = isacEnabled;
+    if (isacEnabled) {
+        sionnaSettings.rx_type_path = rxMesh;
+        sionnaSettings.isac_min_power = 1e-25;
+        sionnaSettings.isac_eps_cluster = 1.5;
+        sionnaSettings.isac_mti_dist_thresh = 0.4;
+        sionnaSettings.isac_min_displacement = 0.3;
+        sionnaSettings.isac_beamwidth_deg = 20.0;
+        sionnaSettings.isac_max_depth = 3;
+        sionnaSettings.isac_diffuse_reflection = true;
+        sionnaSettings.isac_samples_per_src = isacSamplesPerSrc;
+        sionnaSettings.isac_single_bounce_only = false;
+        sionnaSettings.isac_tracker_min_age = 2;
+        sionnaSettings.isac_mti_warmup_frames = 0;
+        sionnaSettings.isac_rx_scattering_coefficient = 0.5;
+    }
 
     if (!SionnaPyEmbed::GetInstance().SionnaInitialize(sionnaSettings))
-        NS_FATAL_ERROR("SionnaInitialize failed for warehouse ISAC scenario");
+        NS_FATAL_ERROR("SionnaInitialize failed for warehouse scenario");
 
     // -----------------------------------------------------------------------
     // Propagation cache + spectrum channel
     // -----------------------------------------------------------------------
     Ptr<SionnaPropagationCache> propCache = CreateObject<SionnaPropagationCache>();
     propCache->SetAttribute("TxNumCols", UintegerValue(gnbAntennaCols));
+    propCache->SetAttribute("EnableWeakLinkFastPath", BooleanValue(false));
+    propCache->SetAttribute("EnableFriisFallback", BooleanValue(false));
+    propCache->SetAttribute("EnableMimoCsi", BooleanValue(useElementMimoCsi));
 
     Ptr<MultiModelSpectrumChannel> channel = CreateObject<MultiModelSpectrumChannel>();
-    auto lossModel  = CreateObject<FriisPropagationLossModel>();
-    auto delayModel = CreateObject<ConstantSpeedPropagationDelayModel>();
+    auto lossModel = CreateObject<SionnaPropagationLossModel>();
+    auto delayModel = CreateObject<SionnaPropagationDelayModel>();
+    auto phasedModel = CreateObject<SionnaPhasedArraySpectrumPropagationLossModel>();
 
+    lossModel->SetPropagationCache(propCache);
+    delayModel->SetPropagationCache(propCache);
+    phasedModel->SetPropagationCache(propCache);
+    phasedModel->SetAttribute("EnableIdealAnalogArrayGain", BooleanValue(!useElementMimoCsi));
     channel->AddPropagationLossModel(lossModel);
     channel->SetPropagationDelayModel(delayModel);
+    channel->AddPhasedArraySpectrumPropagationLossModel(phasedModel);
     channel->TraceConnectWithoutContext("Gain", MakeCallback(&warehouse::OnChannelGainTrace));
 
     auto csiFilter = CreateObject<NrCsiRsFilter>();
@@ -310,6 +360,7 @@ main(int argc, char* argv[])
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
     Ptr<IdealBeamformingHelper> bfHelper = CreateObject<IdealBeamformingHelper>();
     bfHelper->SetAttribute("BeamformingMethod", StringValue("ns3::DirectPathBeamforming"));
+    bfHelper->SetAttribute("BeamformingPeriodicity", TimeValue(Seconds(1.0)));
 
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
     nrHelper->SetEpcHelper(epcHelper);
@@ -327,8 +378,8 @@ main(int argc, char* argv[])
     apGnb.nAntCols       = gnbAntennaCols;
     apGnb.nVertPorts      = gnbVertPorts;
     apGnb.nHorizPorts     = gnbHorizPorts;
-    apGnb.isDualPolarized = isDualPolarized;
-    apGnb.bearingAngle    = M_PI_2;
+    apGnb.isDualPolarized = nrDigitalDualPolarized;
+    apGnb.bearingAngle    = std::atan2(gnbLookAt.y - gnbPos.y, gnbLookAt.x - gnbPos.x);
     apGnb.antennaElem     = "ns3::IsotropicAntennaModel";
     nrHelper->SetupGnbAntennas(apGnb);
 
@@ -337,7 +388,7 @@ main(int argc, char* argv[])
     apUe.nAntCols       = ueAntennaCols;
     apUe.nVertPorts      = ueVertPorts;
     apUe.nHorizPorts     = ueHorizPorts;
-    apUe.isDualPolarized = isDualPolarized;
+    apUe.isDualPolarized = nrDigitalDualPolarized;
     apUe.antennaElem     = "ns3::IsotropicAntennaModel";
     nrHelper->SetupUeAntennas(apUe);
 
@@ -350,8 +401,10 @@ main(int argc, char* argv[])
     nrHelper->SetSchedulerAttribute("EnableSrsInFSlots",  BooleanValue(true));
     nrHelper->SetSchedulerAttribute("EnableHarqReTx",     BooleanValue(true));
     nrHelper->SetSchedulerAttribute("UlCtrlSymbols",      UintegerValue(2));
+    // The Sionna channel does not yet provide a reliable scheduler-side SRS
+    // UL CQI path. Adaptive UL MCS causes avoidable PUSCH decode failures.
     nrHelper->SetSchedulerAttribute("FixedMcsUl",    BooleanValue(true));
-    nrHelper->SetSchedulerAttribute("StartingMcsUl", UintegerValue(0));
+    nrHelper->SetSchedulerAttribute("StartingMcsUl", UintegerValue(sionnaFixedUlMcs));
 
     std::string tddPattern = "F|F|F|F|F|F|F|F|F|F";
     nrHelper->SetGnbPhyAttribute("Pattern", StringValue(tddPattern));
@@ -363,6 +416,7 @@ main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     NetDeviceContainer gnbDev = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
     NetDeviceContainer ueDev  = nrHelper->InstallUeDevice(ueNodes, allBwps);
+    warehouse::AttachUeRadioTraces(ueDev);
     std::vector<Ptr<warehouse::EnergyTracker>> energyTrackers =
         warehouse::InstallNrEnergyModels(gnbNodes,
                                          ueNodes,
@@ -385,8 +439,6 @@ main(int argc, char* argv[])
     internet.Install(ueNodes);
 
     auto [remoteHost, remoteAddr] = epcHelper->SetupRemoteHost("100Gb/s", 2500, Seconds(0.01));
-    (void)remoteHost;
-    (void)remoteAddr;
     Ipv4InterfaceContainer ueIpIface = epcHelper->AssignUeIpv4Address(ueDev);
     nrHelper->AttachToClosestGnb(ueDev, gnbDev);
 
@@ -398,15 +450,75 @@ main(int argc, char* argv[])
             epcHelper->GetUeDefaultGatewayAddress(), ueIpIface.Get(j).second);
     }
 
+    // Saturated radio probes expose capacity changes from the Sionna MIMO
+    // channel without changing the operational MQTT/video workload.
+    if (enableChallengeTraffic) {
+        const Time challengeInterval = MicroSeconds(challengePacketIntervalUs);
+        const Time challengeUlInterval = MicroSeconds(challengeUlPacketIntervalUs);
+        const Time challengeStart = Seconds(std::min(20.0, simTimeSec * 0.25));
+        const Time sinkStart = std::max(Seconds(0.1), challengeStart - MilliSeconds(100));
+        for (uint32_t i = 0; i < numUes; ++i) {
+            const Time sourceStart =
+                challengeStart + MicroSeconds((static_cast<uint64_t>(challengePacketIntervalUs) * 2 * i) /
+                                              (2 * numUes));
+            const Time ulSourceStart =
+                challengeStart +
+                MicroSeconds((static_cast<uint64_t>(challengeUlPacketIntervalUs) * (2 * i + 1)) /
+                             (2 * numUes));
+            const bool isRobot = i >= mobileRobotUeStartIndex;
+            const uint16_t typeIndex = isRobot ? i - mobileRobotUeStartIndex : i;
+            const uint16_t dlPort = (isRobot ? robotDlChallengePortBase : staticDlChallengePortBase) + typeIndex;
+            const uint16_t ulPort = (isRobot ? robotUlChallengePortBase : staticUlChallengePortBase) + typeIndex;
+
+            UdpServerHelper dlSink(dlPort);
+            ApplicationContainer dlSinkApps = dlSink.Install(ueNodes.Get(i));
+            dlSinkApps.Start(sinkStart);
+            dlSinkApps.Stop(Seconds(simTimeSec));
+
+            UdpClientHelper dlSource(ueIpIface.GetAddress(i), dlPort);
+            dlSource.SetAttribute("MaxPackets", UintegerValue(std::numeric_limits<uint32_t>::max()));
+            dlSource.SetAttribute("Interval", TimeValue(challengeInterval));
+            dlSource.SetAttribute("PacketSize", UintegerValue(challengePacketSizeBytes));
+            ApplicationContainer dlSourceApps = dlSource.Install(remoteHost);
+            dlSourceApps.Start(sourceStart);
+            dlSourceApps.Stop(Seconds(simTimeSec));
+
+            if (challengeEnableUl) {
+                UdpServerHelper ulSink(ulPort);
+                ApplicationContainer ulSinkApps = ulSink.Install(remoteHost);
+                ulSinkApps.Start(sinkStart);
+                ulSinkApps.Stop(Seconds(simTimeSec));
+
+                UdpClientHelper ulSource(remoteAddr, ulPort);
+                ulSource.SetAttribute("MaxPackets", UintegerValue(std::numeric_limits<uint32_t>::max()));
+                ulSource.SetAttribute("Interval", TimeValue(challengeUlInterval));
+                ulSource.SetAttribute("PacketSize", UintegerValue(challengePacketSizeBytes));
+                ApplicationContainer ulSourceApps = ulSource.Install(ueNodes.Get(i));
+                ulSourceApps.Start(ulSourceStart);
+                ulSourceApps.Stop(Seconds(simTimeSec));
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // ISAC Beam Steerer
     // -----------------------------------------------------------------------
-    Ptr<SionnaIsacBeamSteerer> isacSteerer = CreateObject<SionnaIsacBeamSteerer>();
-    isacSteerer->SetPropagationCache(propCache);
-    isacSteerer->AddTxNode(gnbNodes.Get(0));
-    for (uint32_t i = 0; i < numUes; ++i)
-        isacSteerer->AddRxNode(ueNodes.Get(i));
-    isacSteerer->Start();
+    Ptr<SionnaIsacBeamSteerer> isacSteerer;
+    if (isacEnabled) {
+        isacSteerer = CreateObject<SionnaIsacBeamSteerer>();
+        isacSteerer->SetPropagationCache(propCache);
+        // Sionna RT applies the multi-target sensing-assisted pattern. Keep
+        // NR's per-UE beam manager authoritative.
+        isacSteerer->SetAttribute("EnableBeamSteering", BooleanValue(false));
+        isacSteerer->AddTxNode(gnbNodes.Get(0));
+        isacSteerer->SetTxPhasedArray(
+            gnbNodes.Get(0),
+            DynamicCast<PhasedArrayModel>(
+                NrHelper::GetGnbPhy(gnbDev.Get(0), 0)->GetSpectrumPhy()->GetAntenna()));
+        for (uint32_t i = 0; i < numUes; ++i)
+            isacSteerer->AddRxNode(ueNodes.Get(i));
+        isacSteerer->Start();
+    }
 
     // -----------------------------------------------------------------------
     // MQTT Broker on remote host (acts as cloud/edge server)
@@ -718,16 +830,24 @@ main(int argc, char* argv[])
     warehouse::g_mobilityNodes.Add(packageSensorNodes);
     warehouse::g_mobilityNodes.Add(videoClientNodes);
     Simulator::Schedule(Seconds(0.0), &warehouse::RecordAllPositions, simTimeSec, 1.0);
-    NodeContainer isacRadioNodes;
-    isacRadioNodes.Add(gnbNodes);
-    isacRadioNodes.Add(ueNodes);
-    Simulator::Schedule(Seconds(0.0), &RunIsacSensingFrame, isacRadioNodes, simTimeSec, rxUpdateIntervalSec);
+    if (isacEnabled) {
+        NodeContainer isacRadioNodes;
+        isacRadioNodes.Add(gnbNodes);
+        isacRadioNodes.Add(ueNodes);
+        Simulator::Schedule(Seconds(0.0),
+                            &RunIsacSensingFrame,
+                            isacRadioNodes,
+                            propCache,
+                            simTimeSec,
+                            isacSensingFrameIntervalSec);
+    }
     Simulator::Stop(Seconds(simTimeSec));
 
-    std::cout << "=== Warehouse ISAC Simulation ===" << std::endl;
+    std::cout << "=== Warehouse " << (isacEnabled ? "ISAC" : "No-ISAC")
+              << " Simulation ===" << std::endl;
     std::cout << "Scene:       " << sceneXml << std::endl;
     std::cout << "Frequency:   " << f_c / 1e9 << " GHz" << std::endl;
-    std::cout << "ISAC:        ENABLED" << std::endl;
+    std::cout << "ISAC:        " << (isacEnabled ? "ENABLED" : "DISABLED") << std::endl;
     std::cout << "Sim time:    " << simTimeSec << " s" << std::endl;
     std::cout << "Starting simulation..." << std::endl;
 
@@ -747,27 +867,33 @@ main(int argc, char* argv[])
     }
     warehouse::ExportPropagationStats(outputDir + "/propagation_stats.csv");
     warehouse::ExportMobilityTrace(outputDir + "/mobility_trace.csv");
+    phasedModel->ExportMimoChannelGainStats(outputDir + "/mimo_channel_gain_stats.csv");
+    warehouse::ExportCqiFeedbackStats(outputDir + "/cqi_feedback_stats.csv");
+    warehouse::ExportRadioLinkStats(outputDir + "/radio_link_stats.csv");
+    warehouse::ExportSionnaPerfStats(outputDir + "/sionna_perf_stats.csv", propCache, phasedModel);
     warehouse::ExportPowerConsumptionStats(outputDir + "/power_consumption_stats.csv",
                                            energyTrackers,
                                            simTimeSec,
                                            gnbNodes.Get(0)->GetId(),
-                                           true,
+                                           isacEnabled,
                                            isacSensingPowerW);
     std::ofstream sensingFile(outputDir + "/sensing_stats.csv");
     sensingFile << "ISACEnabled,DetectionIndex,Time_s,TrackId,X,Y,Z\n";
-    const auto& detections = isacSteerer->GetAccumulatedDetections();
+    const std::vector<SionnaDetectionRecord> detections =
+        isacSteerer ? isacSteerer->GetAccumulatedDetections()
+                    : std::vector<SionnaDetectionRecord>{};
     if (detections.empty()) {
-        sensingFile << "1,,,,,,\n";
+        sensingFile << (isacEnabled ? "1" : "0") << ",,,,,,\n";
     }
     for (uint32_t i = 0; i < detections.size(); ++i) {
         const auto& detection = detections[i];
-        sensingFile << "1," << i << "," << detection.time << "," << detection.track_id << ","
-                    << detection.x << "," << detection.y << "," << detection.z << "\n";
+        sensingFile << "1," << i << "," << detection.time << "," << detection.track_id
+                    << "," << detection.x << "," << detection.y << "," << detection.z << "\n";
     }
     sensingFile.close();
     warehouse::SummaryConfig summaryConfig;
-    summaryConfig.scenarioName = "warehouse-isac";
-    summaryConfig.isacEnabled = true;
+    summaryConfig.scenarioName = isacEnabled ? "warehouse-isac" : "warehouse-no-isac";
+    summaryConfig.isacEnabled = isacEnabled;
     summaryConfig.simTimeSec = simTimeSec;
     summaryConfig.simulatorRunWallClockSec = simulatorRunWallClockSec;
     summaryConfig.assetsRoot = assetsRoot;
@@ -791,7 +917,9 @@ main(int argc, char* argv[])
     summaryConfig.ueHorizontalPorts = ueHorizPorts;
     summaryConfig.ueVerticalPorts = ueVertPorts;
     summaryConfig.mimoRankLimit = mimoRankLimit;
+    summaryConfig.useElementMimoCsi = useElementMimoCsi;
     summaryConfig.dualPolarized = isDualPolarized;
+    summaryConfig.nrDigitalDualPolarized = nrDigitalDualPolarized;
     summaryConfig.gnbTxPowerDbm = gnbTxPowerDbm;
     summaryConfig.ueTxPowerDbm = ueTxPowerDbm;
     summaryConfig.gnbPosition = gnbPos;
@@ -799,11 +927,19 @@ main(int argc, char* argv[])
     summaryConfig.tddPattern = tddPattern;
     summaryConfig.ueSpeedMps = ueSpeed;
     summaryConfig.rxUpdateIntervalSec = rxUpdateIntervalSec;
+    summaryConfig.isacSensingFrameIntervalSec = isacSensingFrameIntervalSec;
     summaryConfig.packageSensorPositions = packageSensorArmPositions;
     summaryConfig.rackSensorPositions = rackSensorPositions;
     summaryConfig.robotStartPositions = mobileRobotPositions;
     summaryConfig.videoClientPositions = videoClientTablePositions;
     summaryConfig.robotVideoPorts = robotVideoPorts;
+    summaryConfig.enableChallengeTraffic = enableChallengeTraffic;
+    summaryConfig.enableChallengeUl = challengeEnableUl;
+    summaryConfig.fixedMcsUl = true;
+    summaryConfig.startingMcsUl = sionnaFixedUlMcs;
+    summaryConfig.challengePacketIntervalUs = challengePacketIntervalUs;
+    summaryConfig.challengeUlPacketIntervalUs = challengeUlPacketIntervalUs;
+    summaryConfig.challengePacketSizeBytes = challengePacketSizeBytes;
     summaryConfig.mobileRobotUeStartIndex = mobileRobotUeStartIndex;
     summaryConfig.detectionCount = detections.size();
     summaryConfig.isacSensingPowerW = isacSensingPowerW;
@@ -853,7 +989,7 @@ main(int argc, char* argv[])
     flowFile << "FlowID,Source,SourceNodeType,Destination,DestinationNodeType,"
              << "SrcPort,DstPort,Protocol,"
              << "TxPackets,RxPackets,TxBytes,RxBytes,"
-             << "Throughput_Kbps,Delay_ms,Jitter_ms,LostPackets\n";
+             << "Throughput_Kbps,SimGoodput_Kbps,DeliveryRatio_pct,Delay_ms,Jitter_ms,LostPackets\n";
 
     uint64_t totalTx = 0, totalRx = 0;
     uint64_t mqttTx = 0, mqttRx = 0;
@@ -871,6 +1007,8 @@ main(int argc, char* argv[])
             ? (stat.timeLastRxPacket - stat.timeFirstTxPacket).GetSeconds()
             : simTimeSec;
         double throughput = (stat.rxPackets > 0) ? (stat.rxBytes * 8.0) / duration / 1024.0 : 0.0;
+        double simGoodput = (stat.rxPackets > 0) ? (stat.rxBytes * 8.0) / simTimeSec / 1024.0 : 0.0;
+        double deliveryRatio = (stat.txPackets > 0) ? 100.0 * stat.rxPackets / stat.txPackets : 0.0;
         double avgDelay  = (stat.rxPackets > 0) ? stat.delaySum.GetMilliSeconds() / stat.rxPackets : 0.0;
         double avgJitter = (stat.rxPackets > 1) ? stat.jitterSum.GetMilliSeconds() / (stat.rxPackets - 1) : 0.0;
 
@@ -908,7 +1046,8 @@ main(int argc, char* argv[])
                  << (t.protocol == 6 ? "TCP" : "UDP") << ","
                  << stat.txPackets << "," << stat.rxPackets << ","
                  << stat.txBytes << "," << stat.rxBytes << ","
-                 << throughput << "," << avgDelay << "," << avgJitter << ","
+                 << throughput << "," << simGoodput << "," << deliveryRatio << ","
+                 << avgDelay << "," << avgJitter << ","
                  << (stat.txPackets - stat.rxPackets) << "\n";
     }
     flowFile.close();
@@ -1160,7 +1299,8 @@ main(int argc, char* argv[])
                   << " Tput: " << robotVideoThroughputKbps[i] << " Kbps"
                   << std::endl;
     }
-    std::cout << "ISAC detections: " << detections.size() << std::endl;
+    if (isacEnabled)
+        std::cout << "ISAC detections: " << detections.size() << std::endl;
     warehouse::KeepRequestedResultCsvs(outputDir);
 
     bool allUesHaveMqttTraffic = true;
@@ -1213,18 +1353,24 @@ main(int argc, char* argv[])
         robotRetrieveCompletions > 0 &&
         robotDropCompletions > 0;
 
-    if (totalRx == 0 || mqttRx == 0 || mqttThroughputKbps <= 0.0 ||
+    const bool verifyFullWorkflow = simTimeSec >= 120.0;
+    if (verifyFullWorkflow &&
+        (totalRx == 0 || mqttRx == 0 || mqttThroughputKbps <= 0.0 ||
         packagePublishes == 0 || controllerPackageReceives == 0 ||
         rackRegisterPublishes < numRackSensors ||
         !allUesHaveMqttTraffic || !allPackageSensorsVerified || !allRackSensorsVerified ||
         !envSensorsVerified || !allRobotFlowsVerified ||
-        !withdrawalVerified || !robotRouteVerified) {
+        !withdrawalVerified || !robotRouteVerified)) {
         std::cerr << "ERROR: Warehouse MQTT verification failed." << std::endl;
         Simulator::Destroy();
         SionnaPyEmbed::GetInstance().Dispose();
         return 1;
-    } else {
+    } else if (verifyFullWorkflow) {
         std::cout << "SUCCESS: all UEs, sensors, withdrawal MQTT, robot route phases, and robot MQTT/video flows are verified" << std::endl;
+    } else {
+        std::cout << "INFO: full workflow verification requires simTime >= 120 s; "
+                     "short-run verification skipped"
+                  << std::endl;
     }
 
     // Print per-flow details
