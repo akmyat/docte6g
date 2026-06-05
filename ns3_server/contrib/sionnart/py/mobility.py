@@ -399,9 +399,12 @@ class SionnaMobility:
         """
         path, speed, cumulative, dist_traveled = self._path_state(obj_name, timestamp)
         if not path:
-            return None
+            self.obj_last_timestamps[obj_name] = timestamp
+            return self.get_position(obj_name)
 
         self.obj_last_timestamps[obj_name] = timestamp
+        if len(cumulative) < 2:
+            return self.get_position(obj_name)
 
         if dist_traveled >= cumulative[-1]:
             final = path[-1]

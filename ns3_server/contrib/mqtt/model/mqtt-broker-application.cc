@@ -160,11 +160,10 @@ void MqttBrokerApp::DrainSocket(Ptr<Socket> socket) {
             break;
         }
 
-        uint8_t buffer[65535];
-        packet->CopyData(buffer, packet->GetSize());
-        for (uint32_t i = 0; i < packet->GetSize(); ++i) {
-            m_socketBuffers[socket].push_back(buffer[i]);
-        }
+        std::vector<uint8_t> buffer(packet->GetSize());
+        packet->CopyData(buffer.data(), buffer.size());
+        auto& socketBuffer = m_socketBuffers[socket];
+        socketBuffer.insert(socketBuffer.end(), buffer.begin(), buffer.end());
     }
 
     std::vector<uint8_t>& recvBuffer = m_socketBuffers[socket];

@@ -83,6 +83,7 @@ struct SummaryConfig
     std::string assetsRoot;
     std::string outputDir;
     std::string sceneXml;
+    std::string sceneCollisionObj;
     std::string rxMesh;
     std::string rxObj;
     uint32_t rngSeed{0};
@@ -102,15 +103,19 @@ struct SummaryConfig
     uint16_t ueVerticalPorts{0};
     uint16_t mimoRankLimit{0};
     bool useElementMimoCsi{false};
+    bool idealAnalogArrayGain{false};
     bool dualPolarized{false};
     bool nrDigitalDualPolarized{false};
     double gnbTxPowerDbm{0.0};
     double ueTxPowerDbm{0.0};
+    double gnbNoiseFigureDb{0.0};
+    double ueNoiseFigureDb{0.0};
     Vector gnbPosition;
     Vector gnbLookAt;
     std::string tddPattern;
     double ueSpeedMps{0.0};
     double rxUpdateIntervalSec{0.0};
+    double rxObjectZOffset{0.0};
     double isacSensingFrameIntervalSec{0.0};
     std::vector<Vector> packageSensorPositions;
     std::vector<Vector> rackSensorPositions;
@@ -119,8 +124,13 @@ struct SummaryConfig
     std::vector<uint16_t> robotVideoPorts;
     bool enableChallengeTraffic{false};
     bool enableChallengeUl{true};
+    bool enableWarehouseWorkflow{true};
     bool fixedMcsUl{true};
     uint32_t startingMcsUl{0};
+    double beamformingPeriodicitySec{1.0};
+    double challengeStartSec{0.0};
+    double robotRouteStartSec{0.0};
+    double robotDropStartSec{0.0};
     uint32_t challengePacketIntervalUs{0};
     uint32_t challengeUlPacketIntervalUs{0};
     uint32_t challengePacketSizeBytes{0};
@@ -630,6 +640,7 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "------\n";
     file << "assets_root: " << config.assetsRoot << "\n";
     file << "sionna_scene_xml: " << config.sceneXml << "\n";
+    file << "mobility_collision_scene_obj: " << config.sceneCollisionObj << "\n";
     file << "ue_mesh_ply: " << config.rxMesh << "\n";
     file << "mobility_mesh_obj: " << config.rxObj << "\n\n";
 
@@ -642,6 +653,8 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "numerology: " << config.numerology << "\n";
     file << "gnb_tx_power_dbm: " << config.gnbTxPowerDbm << "\n";
     file << "ue_tx_power_dbm: " << config.ueTxPowerDbm << "\n";
+    file << "gnb_noise_figure_db: " << config.gnbNoiseFigureDb << "\n";
+    file << "ue_noise_figure_db: " << config.ueNoiseFigureDb << "\n";
     file << "antenna_pattern: " << config.sionnaSettings.pattern << "\n";
     file << "polarization: " << config.sionnaSettings.polarization << "\n";
     file << "dual_polarized: " << config.dualPolarized << "\n";
@@ -656,7 +669,7 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "ue_vertical_ports: " << config.ueVerticalPorts << "\n";
     file << "mimo_rank_limit: " << config.mimoRankLimit << "\n";
     file << "use_element_mimo_csi: " << config.useElementMimoCsi << "\n";
-    file << "ideal_analog_array_gain: " << !config.useElementMimoCsi << "\n";
+    file << "ideal_analog_array_gain: " << config.idealAnalogArrayGain << "\n";
     file << "gnb_position: ";
     WriteVector(file, config.gnbPosition);
     file << "\n";
@@ -672,14 +685,14 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "nr_ul_error_model: ns3::NrEesmIrT2\n";
     file << "nr_amc_model: ns3::NrAmc::ErrorModel\n";
     file << "scheduler: ns3::NrMacSchedulerTdmaPF\n";
-    file << "scheduler_enable_srs_ul_slots: true\n";
-    file << "scheduler_enable_srs_f_slots: true\n";
+    file << "scheduler_enable_srs_ul_slots: false\n";
+    file << "scheduler_enable_srs_f_slots: false\n";
     file << "scheduler_enable_harq_retx: true\n";
     file << "scheduler_ul_ctrl_symbols: 2\n";
     file << "scheduler_fixed_mcs_ul: " << config.fixedMcsUl << "\n";
     file << "scheduler_starting_mcs_ul: " << config.startingMcsUl << "\n";
     file << "beamforming_method: ns3::DirectPathBeamforming\n";
-    file << "beamforming_periodicity_s: 1\n";
+    file << "beamforming_periodicity_s: " << config.beamformingPeriodicitySec << "\n";
     file << "tdd_pattern: " << config.tddPattern << "\n";
     file << "rlc_um_max_tx_buffer_size: 999999999\n\n";
 
@@ -695,7 +708,8 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "mobile_robot_ue_start_index: " << config.mobileRobotUeStartIndex << "\n";
     file << "ue_speed_mps: " << config.ueSpeedMps << "\n";
     file << "rx_update_interval_s: " << config.rxUpdateIntervalSec << "\n";
-    file << "warehouse_bounds: [-15, 15] x [-15, 10] x [0, 2]\n";
+    file << "rx_object_z_offset_m: " << config.rxObjectZOffset << "\n";
+    file << "warehouse_bounds: [-24, 24] x [-19, 19] x [0, 2]\n";
     WritePositionList(file, "package_sensor_arm_positions", config.packageSensorPositions);
     WritePositionList(file, "rack_sensor_positions", config.rackSensorPositions);
     WritePositionList(file, "mobile_robot_start_positions", config.robotStartPositions);
@@ -710,6 +724,7 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "withdrawal_client_id: withdrawal1\n";
     file << "withdrawal_check_interval_ms: 5000\n";
     file << "withdrawal_probability: 1\n";
+    file << "warehouse_workflow_enabled: " << config.enableWarehouseWorkflow << "\n";
     file << "temperature_sensor_client_id: racktempsensor\n";
     file << "humidity_sensor_client_id: rackhumiditysensor\n";
     file << "environment_sensor_publish_interval_ms: 5000\n";
@@ -723,6 +738,9 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "robot_camera_fps: 2\n";
     file << "radio_challenge_traffic_enabled: " << config.enableChallengeTraffic << "\n";
     file << "radio_challenge_uplink_enabled: " << config.enableChallengeUl << "\n";
+    file << "radio_challenge_start_s: " << config.challengeStartSec << "\n";
+    file << "robot_route_start_s: " << config.robotRouteStartSec << "\n";
+    file << "robot_drop_start_s: " << config.robotDropStartSec << "\n";
     file << "radio_challenge_packet_size_bytes: " << config.challengePacketSizeBytes << "\n";
     file << "radio_challenge_dl_packet_interval_us: " << config.challengePacketIntervalUs << "\n";
     file << "radio_challenge_ul_packet_interval_us: " << config.challengeUlPacketIntervalUs << "\n";
@@ -801,6 +819,7 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "sionna_perf_stats.csv\n";
     file << "power_consumption_stats.csv\n";
     file << "sensing_stats.csv\n";
+    file << "isac_beam_stats.csv\n";
     file << "mobility_trace.csv\n";
     file << "mqtt_stats.csv\n";
     file << "ue_mqtt_stats.csv\n";
@@ -823,6 +842,7 @@ KeepRequestedResultCsvs(const std::string& outputDir)
                                         "sionna_perf_stats.csv",
                                         "power_consumption_stats.csv",
                                         "sensing_stats.csv",
+                                        "isac_beam_stats.csv",
                                         "mobility_trace.csv",
                                         "mqtt_stats.csv",
                                         "ue_mqtt_stats.csv",

@@ -174,6 +174,8 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
             settings["horizontal_array_spacing"] = s.horizontal_array_spacing;
         if (!s.rx_mesh.empty())
             settings["rx_mesh"] = s.rx_mesh;
+        if (s.rx_object_z_offset > 0.0)
+            settings["rx_object_z_offset"] = s.rx_object_z_offset;
         settings["cache_threshold_buffer"] = s.cache_threshold_buffer;
         settings["adaptive_future_horizon_seconds"] = s.adaptive_future_horizon_seconds;
         settings["adaptive_future_min_benefit_seconds"] = s.adaptive_future_min_benefit_seconds;
@@ -355,6 +357,34 @@ SionnaPyEmbed::SionnaGetDetectedObjects(double since_time_s)
         }
     } catch (const std::exception& e) {
         NS_LOG_ERROR("SionnaGetDetectedObjects failed: " << e.what());
+    }
+    return results;
+}
+
+std::vector<SionnaBeamRecord>
+SionnaPyEmbed::SionnaGetBeamHistory(double since_time_s)
+{
+    std::vector<SionnaBeamRecord> results;
+    if (!m_initialized) return results;
+    try {
+        py::object py_records = m_impl->m_sionnaInstance.attr("get_beam_history")(since_time_s);
+        py::list records = py_records.cast<py::list>();
+        for (auto item : records) {
+            py::dict record = item.cast<py::dict>();
+            SionnaBeamRecord beam;
+            beam.time = record["time"].cast<double>();
+            beam.beam_index = record["beam_index"].cast<int>();
+            beam.active = record["active"].cast<bool>();
+            beam.x = record["x"].cast<double>();
+            beam.y = record["y"].cast<double>();
+            beam.z = record["z"].cast<double>();
+            beam.theta_deg = record["theta_deg"].cast<double>();
+            beam.phi_deg = record["phi_deg"].cast<double>();
+            beam.beamwidth_deg = record["beamwidth_deg"].cast<double>();
+            results.push_back(beam);
+        }
+    } catch (const std::exception& e) {
+        NS_LOG_ERROR("SionnaGetBeamHistory failed: " << e.what());
     }
     return results;
 }

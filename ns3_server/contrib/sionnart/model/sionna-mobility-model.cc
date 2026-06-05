@@ -33,6 +33,18 @@ ModeToBackendString(SionnaMobilityModel::MobilityMode mode)
     }
     return "CONSTANT_POSITION";
 }
+
+Vector
+ToBackendPosition(const Vector& antennaPosition, double zOffset)
+{
+    return Vector(antennaPosition.x, antennaPosition.y, antennaPosition.z - zOffset);
+}
+
+Vector
+ToAntennaPosition(const Vector& backendPosition, double zOffset)
+{
+    return Vector(backendPosition.x, backendPosition.y, backendPosition.z + zOffset);
+}
 } // namespace
 
 // Static member initialization
@@ -68,6 +80,11 @@ SionnaMobilityModel::GetTypeId(void) {
                                             StringValue(""),
                                             MakeStringAccessor(&SionnaMobilityModel::m_objectPath),
                                             MakeStringChecker())
+                            .AddAttribute("BackendPositionZOffset",
+                                            "Z offset between the ns-3/Sionna antenna point and the PyBullet mesh bottom point.",
+                                            DoubleValue(0.0),
+                                            MakeDoubleAccessor(&SionnaMobilityModel::m_backendPositionZOffset),
+                                            MakeDoubleChecker<double>(0.0))
                             .AddAttribute("Bounds",
                                             "Bounds for RandomWalk mode.",
                                             BoxValue(Box(-100, 100, -100, 100, 0, 0)),
@@ -86,7 +103,8 @@ SionnaMobilityModel::GetTypeId(void) {
 }
 
 SionnaMobilityModel::SionnaMobilityModel()
-    : m_lastUpdateTime(Seconds(-1.0)),
+    : m_backendPositionZOffset(0.0),
+        m_lastUpdateTime(Seconds(-1.0)),
         m_position(Vector(0, 0, 0)),
         m_targetPosition(Vector(0, 0, 0)),
         m_backendInitialized(false),
@@ -103,6 +121,7 @@ SionnaMobilityModel::Copy(void) const {
     model->m_speed = m_speed;
     model->m_objectPath = m_objectPath;
     model->m_bounds = m_bounds;
+    model->m_backendPositionZOffset = m_backendPositionZOffset;
     // m_objectName is not copied to ensure uniqueness
     return model;
 }
@@ -114,7 +133,10 @@ SionnaMobilityModel::DoInitialize(void) {
     }
 
     MobilityPyEmbed &backend = MobilityPyEmbed::GetInstance();
-    bool success = backend.MobilityAddObject(m_objectPath, m_objectName, m_position);
+    bool success = backend.MobilityAddObject(
+        m_objectPath,
+        m_objectName,
+        ToBackendPosition(m_position, m_backendPositionZOffset));
     if (!success) {
         NS_LOG_WARN("Failed to add object " << m_objectName << " to Sionna.");
     } else {
@@ -178,7 +200,8 @@ SionnaMobilityModel::Update(void) const {
     bool success = backend.MobilityUpdatePosition(m_objectName, now.GetSeconds());
     if (!success) {}
 
-    Vector newPos = backend.MobilityGetPosition(m_objectName);
+    Vector newPos = ToAntennaPosition(backend.MobilityGetPosition(m_objectName),
+                                      m_backendPositionZOffset);
 
     if (newPos.x != m_position.x || newPos.y != m_position.y || newPos.z != m_position.z) {
         m_position = newPos;
@@ -214,7 +237,9 @@ void
 SionnaMobilityModel::SetDestination(Vector destination) {
     m_targetPosition = destination;
     if (m_backendInitialized) {
-        MobilityPyEmbed::GetInstance().MobilitySetDestination(m_objectName, m_targetPosition);
+        MobilityPyEmbed::GetInstance().MobilitySetDestination(
+            m_objectName,
+            ToBackendPosition(m_targetPosition, m_backendPositionZOffset));
     }
 }
 
@@ -268,7 +293,10 @@ SionnaMobilityModel::GetNextWaypoint(void) const {
     if (!m_backendInitialized) {
         return Vector(0, 0, 0);
     }
-    return MobilityPyEmbed::GetInstance().MobilityGetNextWaypoint(m_objectName, Simulator::Now().GetSeconds());
+    return ToAntennaPosition(
+        MobilityPyEmbed::GetInstance().MobilityGetNextWaypoint(m_objectName,
+                                                               Simulator::Now().GetSeconds()),
+        m_backendPositionZOffset);
 }
 
 std::vector<Vector>
@@ -276,7 +304,11 @@ SionnaMobilityModel::GetObjectPath(void) const {
     if (!m_backendInitialized) {
         return {};
     }
-    return MobilityPyEmbed::GetInstance().MobilityGetObjectPath(m_objectName);
+    std::vector<Vector> path = MobilityPyEmbed::GetInstance().MobilityGetObjectPath(m_objectName);
+    for (auto& waypoint : path) {
+        waypoint = ToAntennaPosition(waypoint, m_backendPositionZOffset);
+    }
+    return path;
 }
 
 std::string

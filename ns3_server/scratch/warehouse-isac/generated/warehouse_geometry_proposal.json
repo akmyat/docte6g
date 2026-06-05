@@ -1,126 +1,136 @@
 {
   "units": "meters",
   "warehouse": {
-    "width_m": 48.0,
-    "depth_m": 32.0,
-    "height_m": 7.0
+    "width_m": 60.0,
+    "depth_m": 40.0,
+    "height_m": 8.0
   },
+  "minimum_physical_object_clearance_m": 0.5,
   "gnb": {
     "name": "gnb",
-    "x_m": 3.0,
-    "y_m": 3.0,
-    "z_m": 5.0
+    "x_m": 2.0,
+    "y_m": 4.0,
+    "z_m": 6.0
   },
   "racks": [
     {
       "name": "rack_1",
-      "x_m": 10.0,
-      "y_m": 8.0,
+      "x_m": 12.0,
+      "y_m": 10.0,
       "width_m": 2.0,
-      "depth_m": 18.0,
-      "height_m": 3.2,
+      "depth_m": 20.0,
+      "height_m": 4.0,
       "material": "metal"
     },
     {
       "name": "rack_2",
-      "x_m": 15.0,
-      "y_m": 8.0,
+      "x_m": 17.5,
+      "y_m": 10.0,
       "width_m": 2.0,
-      "depth_m": 18.0,
-      "height_m": 3.2,
+      "depth_m": 20.0,
+      "height_m": 4.0,
       "material": "metal"
     },
     {
       "name": "rack_3",
-      "x_m": 20.0,
-      "y_m": 8.0,
+      "x_m": 23.0,
+      "y_m": 10.0,
       "width_m": 2.0,
-      "depth_m": 18.0,
-      "height_m": 3.2,
+      "depth_m": 20.0,
+      "height_m": 4.0,
       "material": "metal"
     },
     {
       "name": "rack_4",
-      "x_m": 25.0,
-      "y_m": 8.0,
+      "x_m": 28.5,
+      "y_m": 10.0,
       "width_m": 2.0,
-      "depth_m": 18.0,
-      "height_m": 3.2,
+      "depth_m": 20.0,
+      "height_m": 4.0,
       "material": "metal"
     },
     {
       "name": "rack_5",
-      "x_m": 30.0,
-      "y_m": 8.0,
+      "x_m": 34.0,
+      "y_m": 10.0,
       "width_m": 2.0,
-      "depth_m": 18.0,
-      "height_m": 3.2,
+      "depth_m": 20.0,
+      "height_m": 4.0,
       "material": "metal"
     },
     {
       "name": "rack_6",
-      "x_m": 35.0,
-      "y_m": 8.0,
+      "x_m": 39.5,
+      "y_m": 10.0,
       "width_m": 2.0,
-      "depth_m": 18.0,
-      "height_m": 3.2,
+      "depth_m": 20.0,
+      "height_m": 4.0,
       "material": "metal"
     }
   ],
   "obstacles": [
     {
-      "name": "packing_partition",
-      "x_m": 39.0,
-      "y_m": 20.0,
-      "width_m": 0.3,
-      "depth_m": 12.0,
-      "height_m": 3.0,
+      "name": "utility_room",
+      "x_m": 2.0,
+      "y_m": 12.0,
+      "width_m": 7.0,
+      "depth_m": 9.0,
+      "height_m": 3.5,
+      "material": "concrete"
+    },
+    {
+      "name": "operations_partition",
+      "x_m": 47.0,
+      "y_m": 10.0,
+      "width_m": 0.4,
+      "depth_m": 28.0,
+      "height_m": 3.5,
       "material": "concrete"
     },
     {
       "name": "dropoff_safety_barrier",
-      "x_m": 39.0,
-      "y_m": 0.0,
-      "width_m": 0.3,
+      "x_m": 47.0,
+      "y_m": 1.0,
+      "width_m": 0.4,
       "depth_m": 7.0,
       "height_m": 1.2,
       "material": "metal"
-    },
-    {
-      "name": "utility_room",
-      "x_m": 1.0,
-      "y_m": 8.0,
-      "width_m": 6.0,
-      "depth_m": 8.0,
-      "height_m": 3.0,
-      "material": "concrete"
     }
   ],
   "zones": {
-    "dropoff": {
+    "dropoff_zone": {
       "name": "dropoff_zone",
-      "x_m": 40.0,
-      "y_m": 1.0,
-      "width_m": 7.0,
-      "depth_m": 5.0,
+      "x_m": 50.0,
+      "y_m": 2.0,
+      "width_m": 8.0,
+      "depth_m": 6.0,
       "height_m": 0.0,
       "material": "floor_marking"
     },
-    "package_staging": {
+    "packing_zone": {
+      "name": "packing_zone",
+      "x_m": 50.0,
+      "y_m": 13.0,
+      "width_m": 8.0,
+      "depth_m": 8.0,
+      "height_m": 0.0,
+      "material": "floor_marking"
+    },
+    "package_staging_zone": {
       "name": "package_staging_zone",
-      "x_m": 40.0,
-      "y_m": 24.0,
-      "width_m": 7.0,
-      "depth_m": 7.0,
+      "x_m": 50.0,
+      "y_m": 26.0,
+      "width_m": 8.0,
+      "depth_m": 10.0,
       "height_m": 0.0,
       "material": "floor_marking"
     },
-    "reserved_robot_spawn": {
+    "reserved_robot_spawn_zone": {
       "name": "reserved_robot_spawn_zone",
-      "x_m": 1.0,
-      "y_m": 24.0,
-      "width_m": 6.0,
-      "depth_m": 7.0,
+      "x_m": 2.0,
+      "y_m": 32.0,
+      "width_m": 7.0,
+      "depth_m": 6.0,
       "height_m": 0.0,
       "material": "floor_marking"
     }
@@ -128,47 +138,51 @@
   "package_sensors": [
     {
       "name": "package_sensor_1",
-      "x_m": 41.5,
-      "y_m": 26.0,
+      "x_m": 52.0,
+      "y_m": 28.0,
       "z_m": 1.5
     },
     {
       "name": "package_sensor_2",
-      "x_m": 43.5,
-      "y_m": 26.0,
+      "x_m": 54.0,
+      "y_m": 28.0,
       "z_m": 1.5
     },
     {
       "name": "package_sensor_3",
-      "x_m": 45.5,
-      "y_m": 26.0,
+      "x_m": 56.0,
+      "y_m": 28.0,
       "z_m": 1.5
     }
   ],
   "candidate_fixed_rack_sensors": [
     {
       "name": "rack_sensor_1",
-      "x_m": 36.4,
-      "y_m": 10.5,
+      "x_m": 44.0,
+      "y_m": 12.5,
       "z_m": 1.5
     },
     {
       "name": "rack_sensor_2",
-      "x_m": 36.4,
-      "y_m": 16.5,
+      "x_m": 44.0,
+      "y_m": 20.0,
       "z_m": 1.5
     },
     {
       "name": "rack_sensor_3",
-      "x_m": 36.4,
-      "y_m": 22.5,
+      "x_m": 44.0,
+      "y_m": 27.5,
       "z_m": 1.5
     }
   ],
-  "reserved_robot_aisle_width_m": 3.0,
+  "rack_aisle_width_m": 3.5,
+  "front_cross_aisle_width_m": 10.0,
+  "rear_cross_aisle_width_m": 9.0,
+  "geometry_validation": "passed",
   "design_notes": [
+    "Physical objects are validated for overlap and a 0.5 m minimum clearance.",
     "Robots are intentionally omitted and can be added in the reserved aisles later.",
-    "Candidate fixed rack sensors sit behind multiple metal rows relative to the southwest gNB.",
+    "Fixed rack sensors sit in the east service aisle, outside rack footprints.",
     "Validate Sionna path loss and CQI at 30 dBm before selecting final radio-test positions."
   ]
 }

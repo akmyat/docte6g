@@ -6,8 +6,12 @@
 #
 # The default showcase profile is sized for a complete sweep within 2-3 hours:
 # - 30 simulated seconds per run for propagation and application-flow metrics
-# - downlink probe traffic and a link-margin stress power to expose gNB array gain
-# - six lightweight sensing frames per ISAC run, including post-start robot motion
+# - interference-stressed downlink probe traffic over the V3 warehouse geometry at 30 dBm gNB power
+# - stale communication-only beam tracking for no-ISAC mobile UEs
+# - faster sensing-assisted beam tracking for ISAC mobile UEs
+# - direction-sensitive beamforming gain so stale beams affect robot links
+# - lightweight sensing frames for ISAC; use --full-workflow for route-motion validation
+# - deterministic robot routes by default so mobility is identical across runs
 # - a hard 180-minute wall-clock limit for the complete sweep
 #
 # Usage from ns3_server:
@@ -26,12 +30,23 @@ RESULTS_DIR="${REPO_DIR}/results/warehouse"
 SIM_TIME=30
 DL_PACKET_INTERVAL_US=1000
 UL_PACKET_INTERVAL_US=2500
+CHALLENGE_PACKET_SIZE_BYTES=1200
+CHALLENGE_START_SEC=-1
+ROBOT_ROUTE_START_SEC=-1
+ROBOT_DROP_START_SEC=-1
 ENABLE_UPLINK=false
-ISAC_FRAME_INTERVAL=5
+ENABLE_WAREHOUSE_WORKFLOW=false
+ISAC_FRAME_INTERVAL=2
 ISAC_SAMPLES_PER_SRC=20000
+ISAC_BEAMWIDTH_DEG=20
 SIONNA_FIXED_UL_MCS=3
-GNB_TX_POWER_DBM=-40
+GNB_TX_POWER_DBM=30
 UE_TX_POWER_DBM=23
+GNB_NOISE_FIGURE_DB=5
+UE_NOISE_FIGURE_DB=7
+NO_ISAC_BEAMFORMING_PERIOD=10
+ISAC_BEAMFORMING_PERIOD=1
+IDEAL_ANALOG_ARRAY_GAIN=false
 MAX_SWEEP_MINUTES=180
 EXPAT_LIB="/home/aung/anaconda3/envs/6G/lib/libexpat.so"
 
@@ -49,7 +64,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         --full-workflow)
             SIM_TIME=120
-            ISAC_FRAME_INTERVAL=5
+            ISAC_FRAME_INTERVAL=2
+            ENABLE_WAREHOUSE_WORKFLOW=true
             shift
             ;;
         --sim-time)
@@ -68,6 +84,22 @@ while [[ $# -gt 0 ]]; do
             UL_PACKET_INTERVAL_US="$2"
             shift 2
             ;;
+        --challenge-packet-size-bytes)
+            CHALLENGE_PACKET_SIZE_BYTES="$2"
+            shift 2
+            ;;
+        --challenge-start)
+            CHALLENGE_START_SEC="$2"
+            shift 2
+            ;;
+        --robot-route-start)
+            ROBOT_ROUTE_START_SEC="$2"
+            shift 2
+            ;;
+        --robot-drop-start)
+            ROBOT_DROP_START_SEC="$2"
+            shift 2
+            ;;
         --downlink-only)
             ENABLE_UPLINK=false
             shift
@@ -76,8 +108,20 @@ while [[ $# -gt 0 ]]; do
             ENABLE_UPLINK=true
             shift
             ;;
+        --enable-warehouse-workflow)
+            ENABLE_WAREHOUSE_WORKFLOW=true
+            shift
+            ;;
+        --disable-warehouse-workflow)
+            ENABLE_WAREHOUSE_WORKFLOW=false
+            shift
+            ;;
         --isac-frame-interval)
             ISAC_FRAME_INTERVAL="$2"
+            shift 2
+            ;;
+        --isac-beamwidth-deg)
+            ISAC_BEAMWIDTH_DEG="$2"
             shift 2
             ;;
         --isac-samples-per-src)
@@ -94,6 +138,26 @@ while [[ $# -gt 0 ]]; do
             ;;
         --ue-tx-power-dbm)
             UE_TX_POWER_DBM="$2"
+            shift 2
+            ;;
+        --gnb-noise-figure-db)
+            GNB_NOISE_FIGURE_DB="$2"
+            shift 2
+            ;;
+        --ue-noise-figure-db)
+            UE_NOISE_FIGURE_DB="$2"
+            shift 2
+            ;;
+        --no-isac-beamforming-period)
+            NO_ISAC_BEAMFORMING_PERIOD="$2"
+            shift 2
+            ;;
+        --isac-beamforming-period)
+            ISAC_BEAMFORMING_PERIOD="$2"
+            shift 2
+            ;;
+        --ideal-analog-array-gain)
+            IDEAL_ANALOG_ARRAY_GAIN="$2"
             shift 2
             ;;
         --max-sweep-minutes)
@@ -141,17 +205,31 @@ run_sweep() {
                 "--gnbAntennaCols=${size}"
                 "--enableChallengeTraffic=true"
                 "--challengeEnableUl=${ENABLE_UPLINK}"
+                "--enableWarehouseWorkflow=${ENABLE_WAREHOUSE_WORKFLOW}"
                 "--challengePacketIntervalUs=${DL_PACKET_INTERVAL_US}"
                 "--challengeUlPacketIntervalUs=${UL_PACKET_INTERVAL_US}"
+                "--challengePacketSizeBytes=${CHALLENGE_PACKET_SIZE_BYTES}"
+                "--challengeStart=${CHALLENGE_START_SEC}"
+                "--robotRouteStart=${ROBOT_ROUTE_START_SEC}"
+                "--robotDropStart=${ROBOT_DROP_START_SEC}"
                 "--sionnaFixedUlMcs=${SIONNA_FIXED_UL_MCS}"
                 "--gnbTxPowerDbm=${GNB_TX_POWER_DBM}"
                 "--ueTxPowerDbm=${UE_TX_POWER_DBM}"
+                "--gnbNoiseFigureDb=${GNB_NOISE_FIGURE_DB}"
+                "--ueNoiseFigureDb=${UE_NOISE_FIGURE_DB}"
+                "--idealAnalogArrayGain=${IDEAL_ANALOG_ARRAY_GAIN}"
                 "--outputDir=${output_dir}"
             )
             if [[ "${scenario}" == "warehouse-isac" ]]; then
                 scenario_args+=(
+                    "--beamformingPeriodicity=${ISAC_BEAMFORMING_PERIOD}"
                     "--isacSensingFrameInterval=${ISAC_FRAME_INTERVAL}"
+                    "--isacBeamwidthDeg=${ISAC_BEAMWIDTH_DEG}"
                     "--isacSamplesPerSrc=${ISAC_SAMPLES_PER_SRC}"
+                )
+            else
+                scenario_args+=(
+                    "--beamformingPeriodicity=${NO_ISAC_BEAMFORMING_PERIOD}"
                 )
             fi
 
@@ -163,7 +241,9 @@ run_sweep() {
 
 export -f run_sweep
 export SCRIPT_DIR NS3_DIR RESULTS_DIR SIM_TIME DL_PACKET_INTERVAL_US UL_PACKET_INTERVAL_US
-export ENABLE_UPLINK ISAC_FRAME_INTERVAL ISAC_SAMPLES_PER_SRC SIONNA_FIXED_UL_MCS
-export GNB_TX_POWER_DBM UE_TX_POWER_DBM
+export CHALLENGE_PACKET_SIZE_BYTES CHALLENGE_START_SEC ROBOT_ROUTE_START_SEC ROBOT_DROP_START_SEC
+export ENABLE_UPLINK ENABLE_WAREHOUSE_WORKFLOW ISAC_FRAME_INTERVAL ISAC_SAMPLES_PER_SRC ISAC_BEAMWIDTH_DEG SIONNA_FIXED_UL_MCS
+export GNB_TX_POWER_DBM UE_TX_POWER_DBM GNB_NOISE_FIGURE_DB UE_NOISE_FIGURE_DB
+export NO_ISAC_BEAMFORMING_PERIOD ISAC_BEAMFORMING_PERIOD IDEAL_ANALOG_ARRAY_GAIN
 
 timeout --foreground "${MAX_SWEEP_MINUTES}m" bash -c run_sweep

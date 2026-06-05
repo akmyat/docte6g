@@ -206,11 +206,11 @@ void MqttClientApp::handleRead(Ptr<Socket> socket) {
             break;
         }
 
-        uint8_t buffer[65535];
-        packet->CopyData(buffer, packet->GetSize());
-        for (uint32_t i = 0; i < packet->GetSize(); ++i) {
-            m_session_state.m_recvBuffer.push_back(buffer[i]);
-        }
+        std::vector<uint8_t> buffer(packet->GetSize());
+        packet->CopyData(buffer.data(), buffer.size());
+        m_session_state.m_recvBuffer.insert(m_session_state.m_recvBuffer.end(),
+                                            buffer.begin(),
+                                            buffer.end());
     }
 
     while (!m_session_state.m_recvBuffer.empty()) {

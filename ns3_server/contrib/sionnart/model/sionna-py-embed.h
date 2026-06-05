@@ -58,6 +58,7 @@ struct SionnaInitSettings {
     std::vector<Vector>      rx_locations;
 
     std::string rx_mesh; // path to .ply file; empty → use default
+    double rx_object_z_offset = 0.0; // place scatterer mesh below receiver antenna point
     std::vector<double> rx_speed; // m/s per receiver; empty → not passed
     double rx_update_interval = 0.0;
     double simulation_duration = 0.0;
@@ -95,6 +96,18 @@ struct SionnaDetectionRecord {
     double x, y, z;
 };
 
+struct SionnaBeamRecord {
+    double time = 0.0;
+    int beam_index = 0;
+    bool active = false;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    double theta_deg = 0.0;
+    double phi_deg = 0.0;
+    double beamwidth_deg = 0.0;
+};
+
 class SionnaPyEmbed {
     public:
         void Initialize();
@@ -108,6 +121,7 @@ class SionnaPyEmbed {
         int  SionnaGetCalculationCalls();
         std::map<std::string, double> SionnaGetPerfStats();
         std::vector<SionnaDetectionRecord> SionnaGetDetectedObjects(double since_time_s = -1.0);
+        std::vector<SionnaBeamRecord> SionnaGetBeamHistory(double since_time_s = -1.0);
 
     private:
         SionnaPyEmbed();

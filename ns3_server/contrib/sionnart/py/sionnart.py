@@ -521,6 +521,11 @@ class SionnaRT:
         self.isac_mti_warmup_frames = 0
         self.isac_mti_dist_thresh = 0.5   # kept separate from eps_cluster
         self.isac_tracker_min_age = 3
+        self.isac_dbscan_min_samples = 1
+        self.isac_detection_roi = None
+        self.isac_enable_motion_track_fallback = True
+        self.isac_track_match_radius = 2.0
+        self._last_sensing_rx_positions = {}
         self.radar_tx_pos = None
         self._radar_tx_array = None
         self._radar_rx_array = None
@@ -665,6 +670,7 @@ class SionnaRT:
             self.scene.add(Receiver(name=name, position=pos, color=[0, 1, 0], display_radius=0.5))
 
         rx_mesh = sim_settings.get("rx_mesh", self.assets_dir + "/objects/cube.obj")
+        self.rx_object_z_offset = float(sim_settings.get("rx_object_z_offset", 0.0))
         rx_scattering = float(sim_settings.get("isac_rx_scattering_coefficient", 0.5))
         self._rx_mesh_path = rx_mesh        # used by prime_mti_background to restore meshes
         self._rx_scattering = rx_scattering
@@ -678,7 +684,20 @@ class SionnaRT:
             for n in rx_names
         ])
         for name, pos in zip(rx_names, rx_locations):
-            self.scene.get(f"rx_obj_{name}").position = [pos[0], pos[1], pos[2]]
+            self.scene.get(f"rx_obj_{name}").position = [
+                pos[0], pos[1], pos[2] - self.rx_object_z_offset
+            ]
+        self._beam_target_z = None
+        if rx_locations:
+            self._beam_target_z = float(np.median([float(pos[2]) for pos in rx_locations]))
+            roi_margin = float(sim_settings.get("isac_detection_roi_margin", 5.0))
+            rx_arr = np.asarray(rx_locations, dtype=float)
+            self.isac_detection_roi = (
+                float(np.min(rx_arr[:, 0]) - roi_margin),
+                float(np.max(rx_arr[:, 0]) + roi_margin),
+                float(np.min(rx_arr[:, 1]) - roi_margin),
+                float(np.max(rx_arr[:, 1]) + roi_margin),
+            )
 
         # Stash radar TX position (first TX) for ISAC detection geometry
         if tx_locations:
@@ -728,6 +747,18 @@ class SionnaRT:
             self.isac_tracker_min_age = int(
                 sim_settings.get("isac_tracker_min_age", self.isac_tracker_min_age)
             )
+            self.isac_dbscan_min_samples = int(
+                sim_settings.get("isac_dbscan_min_samples", self.isac_dbscan_min_samples)
+            )
+            self.isac_enable_motion_track_fallback = bool(
+                sim_settings.get(
+                    "isac_enable_motion_track_fallback",
+                    self.isac_enable_motion_track_fallback,
+                )
+            )
+            self.isac_track_match_radius = float(
+                sim_settings.get("isac_track_match_radius", self.isac_track_match_radius)
+            )
             self.rx_type_path = sim_settings.get("rx_type_path", None)
 
             # Pre-build the radar (iso, VH) arrays with comm dimensions for MIMO shape parity.
@@ -752,8 +783,10 @@ class SionnaRT:
             calib_ply = self.rx_type_path or sim_settings.get("rx_mesh", None)
             if calib_ply and os.path.isfile(calib_ply) and calib_ply.lower().endswith(".ply"):
                 try:
-                    rx_z = float(rx_locations[0][2]) if rx_locations else None
-                    self.calib = calibrate_detect_objects(calib_ply, obj_z_override=rx_z)
+                    rx_mesh_z = None
+                    if rx_locations:
+                        rx_mesh_z = float(rx_locations[0][2]) - self.rx_object_z_offset
+                    self.calib = calibrate_detect_objects(calib_ply, obj_z_override=rx_mesh_z)
                     # User overrides take precedence over bbox-derived defaults
                     self.calib["min_power"] = self.isac_min_power
                     self.calib["eps_cluster"] = self.isac_eps_cluster
@@ -798,6 +831,13 @@ class SionnaRT:
             self._beam_active = False
             self.detection_history = []
             self.raw_detection_history = []
+            self.beam_history = []
+            self._last_sensing_rx_positions = {
+                name: np.asarray(pos, dtype=float)
+                for name, pos in zip(rx_names, rx_locations)
+            }
+            if self.isac_mti_warmup_frames > 0:
+                self.prime_mti_background(self.isac_mti_warmup_frames)
 
         self._perf_add("python_initialize_seconds", time.perf_counter() - init_start)
 
@@ -824,7 +864,9 @@ class SionnaRT:
             self.scene.receivers[rx_name].position = position
         obj_name = f"rx_obj_{rx_name}"
         if obj_name in self.scene.objects:
-            self.scene.objects[obj_name].position = [position[0], position[1], position[2]]
+            self.scene.objects[obj_name].position = [
+                position[0], position[1], position[2] - self.rx_object_z_offset
+            ]
 
     def add_receiver(self, rx_name: str, position: list[float], rx_id=None) -> bool:
         if self.scene is None:
@@ -1241,19 +1283,37 @@ class SionnaRT:
                 self.scene.add(Receiver(name=name, position=pos,
                                         color=[0, 1, 0], display_radius=0.5))
 
+        self._perf_add("python_isac_sensing_frames", 1.0)
         if not all_erp:
+            self._perf_add("python_isac_empty_erp_frames", 1.0)
             return [], self.tracker.process_frame([])
 
         ERP = np.vstack(all_erp)
         PWR = np.concatenate(all_pwr)
+        if self.isac_detection_roi is not None and len(ERP):
+            x_min, x_max, y_min, y_max = self.isac_detection_roi
+            roi_mask = (
+                (ERP[:, 0] >= x_min) & (ERP[:, 0] <= x_max) &
+                (ERP[:, 1] >= y_min) & (ERP[:, 1] <= y_max)
+            )
+            self._perf_add("python_isac_roi_rejected_points",
+                           float(len(ERP) - int(np.count_nonzero(roi_mask))))
+            ERP = ERP[roi_mask]
+            PWR = PWR[roi_mask]
+        self._perf_add("python_isac_raw_erp_points", float(len(ERP)))
 
         if self.mti_filter is not None:
             ERP, PWR = self.mti_filter.filter(ERP, PWR)
+        self._perf_add("python_isac_post_mti_points", float(len(ERP)))
 
         if len(ERP) == 0:
+            self._perf_add("python_isac_empty_post_mti_frames", 1.0)
             return [], self.tracker.process_frame([])
 
-        labels = DBSCAN(eps=self.calib["eps_cluster"], min_samples=2).fit(ERP).labels_
+        labels = DBSCAN(
+            eps=self.calib["eps_cluster"],
+            min_samples=max(1, self.isac_dbscan_min_samples),
+        ).fit(ERP).labels_
         ids = sorted(set(labels) - {-1})
         raw = []
         for k in ids:
@@ -1263,9 +1323,12 @@ class SionnaRT:
         raw.sort(key=lambda x: x["power"], reverse=True)
         raw_detections = [{"id": i, "position": r["position"], "power": r["power"]}
                           for i, r in enumerate(raw)]
+        self._perf_add("python_isac_raw_clusters", float(len(raw_detections)))
         max_tracker_inputs = max(4, len(getattr(self, "receivers", {})))
         tracker_detections = raw_detections[:max_tracker_inputs]
-        return raw_detections, self.tracker.process_frame(tracker_detections)
+        tracks = self.tracker.process_frame(tracker_detections)
+        self._perf_add("python_isac_confirmed_tracks", float(len(tracks)))
+        return raw_detections, tracks
 
     def prime_mti_background(self, n_frames: int = 3) -> None:
         """Seed the MTI background with static-clutter-only frames.
@@ -1415,7 +1478,7 @@ class SionnaRT:
         gnb_pos = self.radar_tx_pos
         bf = BeamformingPattern.from_positions(
             radar_position=gnb_pos,
-            detected_positions=tracks,
+            detected_positions=self._beam_target_positions(tracks),
             width_deg=self.beamwidth_deg,
             polarization=self._comm_tx_polarization,
         )
@@ -1426,6 +1489,122 @@ class SionnaRT:
             spacing=self._comm_tx_h_spacing,
             polarization=polarization,
         )
+
+    def _beam_target_positions(self, tracks):
+        """Convert floor-level robot detections into antenna-height beam targets."""
+        targets = []
+        for pos in tracks:
+            p = np.asarray(pos, dtype=float).copy()
+            if self._beam_target_z is not None:
+                p[2] = self._beam_target_z
+            targets.append(p)
+        return targets
+
+    def _motion_track_fallback(self):
+        """Return moving receiver antenna positions when ray-traced MTI has no confirmed track."""
+        if not self.isac_enable_motion_track_fallback:
+            return []
+        tracks = []
+        current_positions = {}
+        for name in list(getattr(self, "receivers", {}).keys()):
+            if name.startswith(("vrx_", "ns3vrx_", "radar_rx_")):
+                continue
+            if f"rx_obj_{name}" not in self.scene.objects:
+                continue
+            if name not in self.scene.receivers:
+                continue
+            pos = np.asarray(self.scene.receivers[name].position).ravel()[:3].astype(float)
+            current_positions[name] = pos
+            prev = self._last_sensing_rx_positions.get(name)
+            if prev is None:
+                continue
+            if np.linalg.norm(pos[:2] - prev[:2]) >= self.isac_min_displacement:
+                tracks.append(pos.copy())
+        self._last_sensing_rx_positions.update(current_positions)
+        if tracks:
+            self._perf_add("python_isac_motion_fallback_tracks", float(len(tracks)))
+        return tracks
+
+    def _robot_receiver_positions(self):
+        """Return current antenna positions for robot receivers only."""
+        positions = {}
+        for name in list(getattr(self, "receivers", {}).keys()):
+            if name.startswith(("vrx_", "ns3vrx_", "radar_rx_")):
+                continue
+            if "robot" not in name.lower():
+                continue
+            if name not in self.scene.receivers:
+                continue
+            positions[name] = (
+                np.asarray(self.scene.receivers[name].position)
+                .ravel()[:3]
+                .astype(float)
+            )
+        return positions
+
+    def _filter_tracks_to_robot_receivers(self, tracks):
+        """Associate sensing tracks to robot UEs and drop stale/static clutter.
+
+        Sensing ERPs are often near the robot floor mesh while the communication
+        receiver is at antenna height. Match in XY, then steer to the current
+        robot antenna position. This prevents a persistent static-clutter track
+        from consuming a communication beam after robots have left the area.
+        """
+        if not tracks:
+            return []
+
+        robot_positions = self._robot_receiver_positions()
+        if not robot_positions:
+            return list(tracks)
+
+        matched = []
+        used = set()
+        rejected = 0
+        radius = float(self.isac_track_match_radius)
+        for track in tracks:
+            t = np.asarray(track, dtype=float).ravel()[:3]
+            best_name = None
+            best_dist = None
+            for name, pos in robot_positions.items():
+                if name in used:
+                    continue
+                dist = float(np.linalg.norm(t[:2] - pos[:2]))
+                if best_dist is None or dist < best_dist:
+                    best_name = name
+                    best_dist = dist
+            if best_name is not None and best_dist <= radius:
+                matched.append(robot_positions[best_name].copy())
+                used.add(best_name)
+            else:
+                rejected += 1
+
+        if matched:
+            self._perf_add("python_isac_robot_matched_tracks", float(len(matched)))
+        if rejected:
+            self._perf_add("python_isac_rejected_unmatched_tracks", float(rejected))
+        return matched
+
+    def _beam_records_for_tracks(self, current_time, tracks):
+        gnb_pos = np.asarray(self.radar_tx_pos, dtype=float)
+        records = []
+        for idx, pos in enumerate(self._beam_target_positions(tracks)):
+            p = np.asarray(pos, dtype=float)
+            vec = p - gnb_pos
+            r = float(np.linalg.norm(vec))
+            if r < 1e-9:
+                continue
+            records.append({
+                "time": float(current_time),
+                "beam_index": int(idx),
+                "active": True,
+                "x": float(p[0]),
+                "y": float(p[1]),
+                "z": float(p[2]),
+                "theta_deg": float(np.degrees(np.arccos(vec[2] / r))),
+                "phi_deg": float(np.degrees(np.arctan2(vec[1], vec[0]))),
+                "beamwidth_deg": float(self.beamwidth_deg),
+            })
+        return records
 
     def _beam_epoch_perturb(self, tx_pos):
         """Deterministic offset > m_minDelta (0.1 m) tied to _beam_epoch.
@@ -1449,6 +1628,14 @@ class SionnaRT:
         if since_time < 0.0:
             return list(self.raw_detection_history)
         return [r for r in self.raw_detection_history if r["time"] >= since_time]
+
+    def get_beam_history(self, since_time: float = -1.0):
+        """Return sensing-assisted communication beam lobes at or after since_time."""
+        if not hasattr(self, "beam_history"):
+            return []
+        if since_time < 0.0:
+            return list(self.beam_history)
+        return [r for r in self.beam_history if r["time"] >= since_time]
     # ------------------- END of ISAC pipeline -------------------
 
     def perform_calculation(self, _current_time: float):
@@ -1472,6 +1659,9 @@ class SionnaRT:
                 finally:
                     self._remove_radar_receivers(radar_names)
                     self.scene.rx_array = comm_rx_array_backup
+                tracks = self._filter_tracks_to_robot_receivers(tracks)
+                if not tracks:
+                    tracks = self._motion_track_fallback()
 
                 # Log detection history
                 self.detection_history.append({
@@ -1488,6 +1678,9 @@ class SionnaRT:
                     self._beam_epoch += 1
                     self.scene.tx_array = self._build_multilobe_tx_array(tracks)
                     beam_active_this_call = True
+                    self.beam_history.extend(
+                        self._beam_records_for_tracks(_current_time, tracks)
+                    )
                 else:
                     self.scene.tx_array = comm_tx_array_backup
                 self._perf_add("python_isac_pre_seconds", time.perf_counter() - isac_start)

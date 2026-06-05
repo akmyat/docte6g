@@ -1,0 +1,193 @@
+Warehouse Simulation Summary
+============================
+
+Run
+---
+scenario: warehouse-isac
+isac_enabled: true
+simulation_time_s: 180
+simulator_run_wall_clock_s: 1827.09
+rng_seed: 42
+rng_run: 42
+output_dir: /home/aung/code/docte6g/results/warehouse-patched-180s/isac-4x4
+
+Assets
+------
+assets_root: /home/aung/code/docte6g/assets
+sionna_scene_xml: /home/aung/code/docte6g/assets/scenes/warehouse/warehouse_v3.xml
+mobility_collision_scene_obj: /home/aung/code/docte6g/assets/scenes/warehouse/warehouse_v3.obj
+ue_mesh_ply: /home/aung/code/docte6g/assets/objects/iw_hub/iw_hub.ply
+mobility_mesh_obj: /home/aung/code/docte6g/assets/objects/iw_hub/iw_hub.obj
+
+NR Radio
+--------
+carrier_frequency_hz: 1.5e+10
+subcarrier_spacing_hz: 120000
+num_subcarriers: 3276
+bandwidth_hz: 393120000
+numerology: 3
+gnb_tx_power_dbm: 30
+ue_tx_power_dbm: 23
+gnb_noise_figure_db: 5
+ue_noise_figure_db: 7
+antenna_pattern: tr38901
+polarization: VH
+dual_polarized: true
+nr_digital_dual_polarized: false
+gnb_array_rows: 4
+gnb_array_cols: 4
+ue_array_rows: 2
+ue_array_cols: 2
+gnb_horizontal_ports: 1
+gnb_vertical_ports: 1
+ue_horizontal_ports: 1
+ue_vertical_ports: 1
+mimo_rank_limit: 1
+use_element_mimo_csi: false
+ideal_analog_array_gain: false
+gnb_position: [10, -18.5, 6]
+gnb_look_at: [10, 16, 1.5]
+channel_propagation_loss: ns3::SionnaPropagationLossModel
+channel_propagation_delay: ns3::SionnaPropagationDelayModel
+channel_phased_array_spectrum_loss: ns3::SionnaPhasedArraySpectrumPropagationLossModel
+channel_weak_link_friis_fast_path: disabled
+channel_missing_record_friis_fallback: disabled
+nr_dl_error_model: ns3::NrEesmIrT2
+nr_ul_error_model: ns3::NrEesmIrT2
+nr_amc_model: ns3::NrAmc::ErrorModel
+scheduler: ns3::NrMacSchedulerTdmaPF
+scheduler_enable_srs_ul_slots: false
+scheduler_enable_srs_f_slots: false
+scheduler_enable_harq_retx: true
+scheduler_ul_ctrl_symbols: 2
+scheduler_fixed_mcs_ul: true
+scheduler_starting_mcs_ul: 3
+beamforming_method: ns3::DirectPathBeamforming
+beamforming_periodicity_s: 1
+tdd_pattern: F|F|F|F|F|F|F|F|F|F
+rlc_um_max_tx_buffer_size: 999999999
+
+Topology And Mobility
+---------------------
+gnb_count: 1
+rack_sensor_ue_count: 3
+mobile_robot_ue_count: 3
+package_sensor_count: 3
+video_client_count: 3
+rack_ue_mobility_mode: SionnaMobilityModel::CONSTANT_POSITION
+robot_ue_mobility_mode: SionnaMobilityModel::AUTONOMOUS
+mobile_robot_ue_start_index: 3
+ue_speed_mps: 2
+rx_update_interval_s: 0.5
+rx_object_z_offset_m: 1.5
+warehouse_bounds: [-24, 24] x [-19, 19] x [0, 2]
+package_sensor_arm_positions (3)
+  1: [21.2, -15, 1.2]
+  2: [11.2, -15, 1.2]
+  3: [-13.8, -15, 1.2]
+rack_sensor_positions (3)
+  1: [10, 18.5, 1.5]
+  2: [10, 16.5, 1.5]
+  3: [10, 14.5, 1.5]
+mobile_robot_start_positions (3)
+  1: [10, -12, 1.5]
+  2: [10, -9.5, 1.5]
+  3: [10, -7, 1.5]
+video_client_table_positions (3)
+  1: [-22, 4, 1.5]
+  2: [-22, 9, 1.5]
+  3: [-22, 14, 1.5]
+
+Warehouse Applications
+----------------------
+mqtt_broker_port: 1883
+broker_node: EPC PGW node
+controller_client_id: controller1
+withdrawal_client_id: withdrawal1
+withdrawal_check_interval_ms: 5000
+withdrawal_probability: 1
+warehouse_workflow_enabled: false
+temperature_sensor_client_id: racktempsensor
+humidity_sensor_client_id: rackhumiditysensor
+environment_sensor_publish_interval_ms: 5000
+package_sensor_check_interval_ms: 5000
+package_sensor_generation_probability: 1
+rack_sensor_names: rack1, rack2, rack3
+robot_names: robot1, robot2, robot3
+robot_camera_names: camera1, camera2, camera3
+video_client_names: videoclient1, videoclient2, videoclient3
+robot_camera_frame_size_bytes: 300
+robot_camera_fps: 2
+radio_challenge_traffic_enabled: true
+radio_challenge_uplink_enabled: false
+radio_challenge_start_s: 23
+robot_route_start_s: 28
+robot_drop_start_s: 53
+radio_challenge_packet_size_bytes: 1200
+radio_challenge_dl_packet_interval_us: 1000
+radio_challenge_ul_packet_interval_us: 2500
+radio_challenge_static_dl_ports: 12000-12002
+radio_challenge_robot_dl_ports: 13000-13002
+radio_challenge_static_ul_ports: 14000-14002
+radio_challenge_robot_ul_ports: 15000-15002
+robot_video_ports: 10000 10001 10002
+
+Energy Accounting
+-----------------
+energy_source_initial_energy_j: 100000
+energy_supply_voltage_v: 3.7
+gnb_fixed_power_w: 20
+gnb_idle_power_w: 0.5
+gnb_rx_data_power_w: 1.5
+gnb_tx_power_w: 5
+gnb_rx_ctrl_power_w: 1
+ue_energy_model: ns3::NrUeEnergyModel
+isac_sensing_power_w: 5
+isac_sensing_energy_accounting: constant sensing power active for simulation time
+
+Sionna And ISAC
+---------------
+sionna_rx_names: Rx_rack_sensor_1 Rx_rack_sensor_2 Rx_rack_sensor_3 Rx_robot_1 Rx_robot_2 Rx_robot_3
+sionna_rx_ids: 1 2 3 4 5 6
+sionna_rx_mesh: /home/aung/code/docte6g/assets/objects/iw_hub/iw_hub.ply
+sionna_rx_type_path: /home/aung/code/docte6g/assets/objects/iw_hub/iw_hub.ply
+sionna_simulation_duration_s: 180
+comm_max_depth: 3
+comm_diffuse_reflection: false
+comm_static_clutter_scattering: 0
+enable_situation_awareness: true
+isac_detection_count: 443
+isac_min_power: 1e-25
+isac_eps_cluster: 1.5
+isac_mti_dist_thresh: 0.4
+isac_min_displacement: 0.3
+isac_beamwidth_deg: 20
+isac_max_depth: 3
+isac_diffuse_reflection: true
+isac_samples_per_src: 20000
+isac_single_bounce_only: false
+isac_tracker_min_age: 2
+isac_mti_warmup_frames: 1
+isac_rx_scattering_coefficient: 0.5
+isac_sensing_frame_interval_s: 2
+
+Result Artifacts
+----------------
+flow_stats.csv
+propagation_stats.csv
+mimo_channel_gain_stats.csv
+cqi_feedback_stats.csv
+radio_link_stats.csv
+sionna_perf_stats.csv
+power_consumption_stats.csv
+sensing_stats.csv
+isac_beam_stats.csv
+mobility_trace.csv
+mqtt_stats.csv
+ue_mqtt_stats.csv
+package_sensor_mqtt_stats.csv
+environment_sensor_mqtt_stats.csv
+rack_sensor_mqtt_stats.csv
+robot_mqtt_video_stats.csv
+robot_task_stats.csv
+summary.txt

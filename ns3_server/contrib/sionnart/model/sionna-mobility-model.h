@@ -67,6 +67,7 @@ class SionnaMobilityModel : public MobilityModel {
         std::string m_objectName;
         std::string m_objectPath;
         Box m_bounds;
+        double m_backendPositionZOffset;
 
         // Internal state
         mutable Time m_lastUpdateTime;

@@ -194,8 +194,11 @@ WarehouseRobotApp::MoveToTarget(Vector target, const std::string& completionStat
             double offsetDist = 1.3;
             offsetTarget.x = target.x - (dx / dist2D) * offsetDist;
             offsetTarget.y = target.y - (dy / dist2D) * offsetDist;
-            // Maintain original target Z
         }
+        // Robot commands describe task locations, but the radio/collision object
+        // must stay at its normal antenna height instead of dipping to floor-level
+        // package/drop markers.
+        offsetTarget.z = pos.z;
 
         sionnaMob->SetAttribute("Mode", EnumValue(SionnaMobilityModel::AUTONOMOUS));
         sionnaMob->SetDestination(offsetTarget);
