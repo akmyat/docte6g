@@ -71,7 +71,6 @@ WarehouseControllerApp::StartApplication() {
 void
 WarehouseControllerApp::StopApplication() {
     NS_LOG_FUNCTION(this);
-    Simulator::Cancel(m_retrievalCheckEvent);
     Simulator::Cancel(m_trackEvent);
 
     // Group logs by sensor name
@@ -211,6 +210,9 @@ WarehouseControllerApp::OnMqttPublishReceived(
                     ri.availWeight = getVal(wtPos);
                     m_racks[sensorName] = ri;
                     NS_LOG_INFO(sensorName << " capacity: W=" << ri.availWidth << " H=" << ri.availHeight << " L=" << ri.availLength << " Wt=" << ri.availWeight);
+                    // A new rack became available — flush any queued packages that were
+                    // waiting for rack capacity to appear (e.g. racks with delayed startup).
+                    AssignTasks();
                 }
             } else if (sensorType == "package_sensor") {
                 m_sensorPositions[sensorName] = currentPos;
@@ -402,50 +404,39 @@ WarehouseControllerApp::OnMqttPublishReceived(
             NS_LOG_INFO("Controller interpreted robot " << rId << " status: " << status << " package: " << pId);
             
             if (status == "PICKUP_COMPLETE") {
-                // Must send STORE command to the specific rack we reserved.
+                // Broadcast STORE mission — mission server delivers full UDP payload to robot.
                 if (m_packageLocations.find(pId) != m_packageLocations.end()) {
                     std::string rackId = m_packageLocations[pId];
                     std::vector<double> rp = m_rackPositions[rackId];
-                    std::stringstream ss;
-                    ss << "{\"command\": \"STORE\", \"package_id\": \"" << pId 
-                       << "\", \"target_location\": [" << rp[0] << "," << rp[1] << "," << rp[2] << "]}";
-                    m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + rId + "/command", ss.str(), 1, false, false);
+                    BroadcastMission(rId, "STORE", pId, rp, rackId);
                     Simulator::Schedule(Seconds(20.0),
                                         &WarehouseControllerApp::CompleteStoreFallback,
-                                        this,
-                                        rId,
-                                        pId,
-                                        rackId);
+                                        this, rId, pId, rackId, 0);
                 } else {
                     NS_LOG_ERROR("Robot " << rId << " picked up pkg " << pId << " but controller forgot the rack!");
                 }
             } else if (status == "STORE_COMPLETE") {
-                // Notify Rack to store
+                // Notify rack of stored inventory.
                 if (m_packageLocations.find(pId) != m_packageLocations.end()) {
                     std::string rackId = m_packageLocations[pId];
                     Package& pkg = m_allPackages[pId];
                     std::stringstream ss;
-                    ss << "{\"command\": \"store\", \"package_id\": \"" << pId 
-                       << "\", \"width\": " << pkg.width 
-                       << ", \"height\": " << pkg.height 
-                       << ", \"length\": " << pkg.length 
+                    ss << "{\"command\": \"store\", \"package_id\": \"" << pId
+                       << "\", \"width\": " << pkg.width
+                       << ", \"height\": " << pkg.height
+                       << ", \"length\": " << pkg.length
                        << ", \"weight\": " << pkg.weight << "}";
-                    m_mqttClient->sendPUBLISHpacket("warehouse/rack/" + rackId + "/command", ss.str(), 1, false, false);
+                    m_mqttClient->sendPUBLISHpacket("warehouse/rack/" + rackId + "/command", ss.str(), 0, false, false);
                 }
-                m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + rId + "/command", "{\"command\": \"FINISH_STORE\"}", 1, false, false);
-                // Package is no longer carried after store completes.
+                // Robot self-transitions to IDLE after STORE_COMPLETE; controller waits for IDLE report.
                 m_robots[rId].currentPackageId.clear();
             } else if (status == "RETRIEVE_COMPLETE") {
-                std::stringstream ss;
-                ss << "{\"command\": \"DROP\", \"package_id\": \"" << pId 
-                   << "\", \"target_location\": [" << m_pickupZone[0] << "," << m_pickupZone[1] << "," << m_pickupZone[2] << "]}";
-                m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + rId + "/command", ss.str(), 1, false, false);
+                // Broadcast DROP mission — mission server delivers full UDP payload to robot.
+                BroadcastMission(rId, "DROP", pId, m_pickupZone, "");
             } else if (status == "DROP_COMPLETE") {
-                 // Notify Rack to withdraw internally
-                 m_packageLocations.erase(pId);
-                 m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + rId + "/command", "{\"command\": \"FINISH_DROP\"}", 1, false, false);
-                 // Package has been dropped; clear association immediately.
-                 m_robots[rId].currentPackageId.clear();
+                m_packageLocations.erase(pId);
+                // Robot self-transitions to IDLE after DROP_COMPLETE; controller waits for IDLE report.
+                m_robots[rId].currentPackageId.clear();
             } else if (status == "IDLE") {
                 if (!m_pendingWithdrawals.empty() || m_packageLocations.empty()) {
                     // Withdrawal pending, or nothing stored yet — assign immediately.
@@ -465,6 +456,7 @@ WarehouseControllerApp::OnMqttPublishReceived(
             size_t end = payload.find("\"", start);
             std::string pId = payload.substr(start, end - start);
             m_pendingWithdrawals.push(pId);
+            m_pendingWithdrawalSet.insert(pId);
             NS_LOG_INFO("Controller received withdrawal request for: " << pId);
             AssignTasks();
         }
@@ -478,16 +470,7 @@ WarehouseControllerApp::OnMqttPublishReceived(
         for (const auto& pair : m_packageLocations) {
             const std::string& pId = pair.first;
             
-            // Basic check: is it in a pending withdrawal?
-            bool isPending = false;
-            std::queue<std::string> tempQueue = m_pendingWithdrawals;
-            while(!tempQueue.empty()) {
-                if (tempQueue.front() == pId) {
-                    isPending = true;
-                    break;
-                }
-                tempQueue.pop();
-            }
+            bool isPending = m_pendingWithdrawalSet.count(pId) > 0;
 
             // Is any robot currently holding it?
             bool isHeld = false;
@@ -514,121 +497,136 @@ WarehouseControllerApp::OnMqttPublishReceived(
 
 void
 WarehouseControllerApp::AssignTasks() {
-    // Basic assignment logic
-    // 1. Process pending withdrawals first. If an idle robot exists, dispatch it.
-    // 2. Process package queue. If an idle robot and rack with capacity exists, dispatch it.
-
-    // Get an idle robot
-    std::string idleRobotId = "";
-    for (const auto& rpair : m_robots) {
-        if (rpair.second.status == "IDLE") {
-            idleRobotId = rpair.first;
-            break;
+    // Iteratively assign work to idle robots: withdrawals first, then new pickups.
+    // A while-loop replaces the previous tail-recursive calls so the call stack
+    // stays flat regardless of how many idle robots or queued packages exist.
+    while (true) {
+        // Find an idle robot for this iteration.
+        std::string idleRobotId = "";
+        for (const auto& rpair : m_robots) {
+            if (rpair.second.status == "IDLE") {
+                idleRobotId = rpair.first;
+                break;
+            }
         }
-    }
+        if (idleRobotId.empty()) {
+            NS_LOG_WARN("No idle robot available for assigning tasks.");
+            return;
+        }
 
-    if (idleRobotId == "") {
-        NS_LOG_WARN("No idle robot available for assigning tasks.");
-        return;
-    }
+        if (!m_pendingWithdrawals.empty()) {
+            std::string pId = m_pendingWithdrawals.front();
+            m_pendingWithdrawals.pop();
+            m_pendingWithdrawalSet.erase(pId);
 
-    if (!m_pendingWithdrawals.empty()) {
-        std::string pId = m_pendingWithdrawals.front();
-        if (m_packageLocations.find(pId) != m_packageLocations.end()) {
+            if (m_packageLocations.find(pId) == m_packageLocations.end()) {
+                NS_LOG_WARN("Package " << pId << " requested for withdrawal but not found in any rack. Dropping request.");
+                continue; // try next withdrawal / package
+            }
+
             std::string rackId = m_packageLocations[pId];
             std::vector<double> rp = m_rackPositions[rackId];
-            
-            // Dispatch retrieve
-            std::stringstream ss;
-            ss << "{\"command\": \"RETRIEVE\", \"package_id\": \"" << pId 
-               << "\", \"target_location\": [" << rp[0] << "," << rp[1] << "," << rp[2] << "]}";
-               
-            // Tell rack to remove from capacity
+
             Package& pkg = m_allPackages[pId];
             std::stringstream rs;
-            rs << "{\"command\": \"retrieve\", \"package_id\": \"" << pId 
-               << "\", \"width\": " << pkg.width 
-               << ", \"height\": " << pkg.height 
-               << ", \"length\": " << pkg.length 
+            rs << "{\"command\": \"retrieve\", \"package_id\": \"" << pId
+               << "\", \"width\": " << pkg.width
+               << ", \"height\": " << pkg.height
+               << ", \"length\": " << pkg.length
                << ", \"weight\": " << pkg.weight << "}";
-            m_mqttClient->sendPUBLISHpacket("warehouse/rack/" + rackId + "/command", rs.str(), 1, false, false);
+            m_mqttClient->sendPUBLISHpacket("warehouse/rack/" + rackId + "/command", rs.str(), 0, false, false);
 
-            m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + idleRobotId + "/command", ss.str(), 1, false, false);
+            BroadcastMission(idleRobotId, "RETRIEVE", pId, rp, rackId);
+
             Simulator::Schedule(Seconds(20.0),
                                 &WarehouseControllerApp::DispatchDropFallback,
                                 this,
                                 idleRobotId,
                                 pId);
-            
-            m_robots[idleRobotId].status = "MOVING_TO_RACK";
-            m_pendingWithdrawals.pop();
-            return;
-        } else {
-            NS_LOG_WARN("Package " << pId << " requested for withdrawal but not found in any rack. Dropping request.");
-            m_pendingWithdrawals.pop();
-            AssignTasks(); // try next
-            return;
-        }
-    }
 
-    if (!m_unassignedPackages.empty()) {
-        Package pkg = m_unassignedPackages.front();
-        
-        // Find a rack
-        std::string targetRack = "";
-        NS_LOG_INFO("AssignTasks: Checking " << m_racks.size() << " racks for pkg " << pkg.id << " (W:" << pkg.width << ", H:" << pkg.height << ", L:" << pkg.length << ", Wt:" << pkg.weight << ")");
-        double targetRackWidth = -1.0;
-        for (auto& rpair : m_racks) {
-            RackInfo& ri = rpair.second;
-            NS_LOG_INFO(" Rack " << ri.id << " Avail: W:" << ri.availWidth << ", H:" << ri.availHeight << ", L:" << ri.availLength << ", Wt:" << ri.availWeight);
-            if (ri.availWidth >= pkg.width && ri.availHeight >= pkg.height && 
-                ri.availLength >= pkg.length && ri.availWeight >= pkg.weight &&
-                ri.availWidth > targetRackWidth) {
-                targetRack = ri.id;
-                targetRackWidth = ri.availWidth;
-            }
+            m_robots[idleRobotId].status = "MOVING_TO_RACK_RETRIEVE";
+            m_robots[idleRobotId].currentPackageId = pId;
+            continue; // check for more idle robots
         }
-        
-        if (targetRack != "") {
+
+        if (!m_unassignedPackages.empty()) {
+            Package pkg = m_unassignedPackages.front();
+
+            std::string targetRack = "";
+            double targetRackWidth = -1.0;
+            NS_LOG_INFO("AssignTasks: Checking " << m_racks.size() << " racks for pkg " << pkg.id);
+            for (auto& rpair : m_racks) {
+                RackInfo& ri = rpair.second;
+                if (ri.availWidth >= pkg.width && ri.availHeight >= pkg.height &&
+                    ri.availLength >= pkg.length && ri.availWeight >= pkg.weight &&
+                    ri.availWidth > targetRackWidth) {
+                    targetRack = ri.id;
+                    targetRackWidth = ri.availWidth;
+                }
+            }
+
+            if (targetRack.empty()) {
+                NS_LOG_WARN("No rack capacity available for package " << pkg.id << ". Keeping in queue.");
+                return;
+            }
+
             RackInfo& reservedRack = m_racks[targetRack];
-            // Pre-reserve capacity in controller state.
-            reservedRack.availWidth -= pkg.width;
+            reservedRack.availWidth  -= pkg.width;
             reservedRack.availHeight -= pkg.height;
             reservedRack.availLength -= pkg.length;
             reservedRack.availWeight -= pkg.weight;
             m_packageLocations[pkg.id] = targetRack;
+
             std::vector<double> sp = m_sensorPositions[pkg.sourceSensor];
-            
-            std::stringstream ss;
-            ss << "{\"command\": \"PICKUP\", \"package_id\": \"" << pkg.id 
-               << "\", \"target_location\": [" << sp[0] << "," << sp[1] << "," << sp[2] << "]}";
-            m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + idleRobotId + "/command", ss.str(), 1, false, false);
-            
+            BroadcastMission(idleRobotId, "PICKUP", pkg.id, sp, targetRack, &pkg);
+
             m_robots[idleRobotId].status = "MOVING_TO_PAYLOAD";
+            m_robots[idleRobotId].currentPackageId = pkg.id;
             m_unassignedPackages.pop();
-            
-            // Recurse to see if we can assign more (if more idle robots)
-            AssignTasks();
-        } else {
-             NS_LOG_WARN("No rack capacity available for package " << pkg.id << ". Keeping in queue.");
+            continue; // check for more idle robots
         }
+
+        return; // nothing left to assign
     }
 }
 
 void
 WarehouseControllerApp::CompleteStoreFallback(std::string robotId,
                                                std::string packageId,
-                                               std::string rackId) {
+                                               std::string rackId,
+                                               int retryCount) {
     auto robotIt = m_robots.find(robotId);
     auto packageIt = m_allPackages.find(packageId);
+    const std::string& status = robotIt == m_robots.end() ? "" : robotIt->second.status;
     if (!m_mqttClient || !m_mqttClient->IsConnected() ||
         robotIt == m_robots.end() || packageIt == m_allPackages.end() ||
         robotIt->second.currentPackageId != packageId ||
-        robotIt->second.status == "IDLE") {
+        status == "IDLE" ||
+        status == "MOVING_TO_RACK_RETRIEVE" ||
+        status == "RETRIEVE_COMPLETE" ||
+        status == "MOVING_TO_PICKUP_ZONE" ||
+        status == "DROP_COMPLETE") {
         return;
     }
 
     const Package& pkg = packageIt->second;
+
+    if (retryCount == 0) {
+        // First attempt: re-broadcast STORE mission in case the initial UDP dispatch
+        // was lost. Robot's dedup guard ignores this if already moving to rack.
+        std::vector<double> rp = m_rackPositions[rackId];
+        BroadcastMission(robotId, "STORE", packageId, rp, rackId, &pkg);
+        NS_LOG_INFO("CompleteStoreFallback: re-broadcast STORE for " << robotId
+                    << " pkg=" << packageId << " (retry 1 in 20s)");
+        Simulator::Schedule(Seconds(20.0),
+                            &WarehouseControllerApp::CompleteStoreFallback,
+                            this, robotId, packageId, rackId, 1);
+        return;
+    }
+
+    // Second attempt: robot is genuinely stuck. Notify rack and force controller
+    // state to IDLE so the workflow can continue.
+    NS_LOG_WARN("CompleteStoreFallback: robot " << robotId << " still stuck after retry — forcing IDLE");
     std::stringstream rackStore;
     rackStore << "{\"command\": \"store\", \"package_id\": \"" << packageId
               << "\", \"width\": " << pkg.width
@@ -636,15 +634,7 @@ WarehouseControllerApp::CompleteStoreFallback(std::string robotId,
               << ", \"length\": " << pkg.length
               << ", \"weight\": " << pkg.weight << "}";
     m_mqttClient->sendPUBLISHpacket("warehouse/rack/" + rackId + "/command",
-                                    rackStore.str(),
-                                    1,
-                                    false,
-                                    false);
-    m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + robotId + "/command",
-                                    "{\"command\": \"FINISH_STORE\"}",
-                                    1,
-                                    false,
-                                    false);
+                                    rackStore.str(), 0, false, false);
     robotIt->second.status = "IDLE";
     robotIt->second.currentPackageId.clear();
     AssignTasks();
@@ -657,40 +647,69 @@ WarehouseControllerApp::DispatchDropFallback(std::string robotId, std::string pa
         robotIt == m_robots.end() ||
         robotIt->second.currentPackageId != packageId ||
         robotIt->second.status == "MOVING_TO_PICKUP_ZONE" ||
+        robotIt->second.status == "DROP_COMPLETE" ||
         robotIt->second.status == "IDLE") {
         return;
     }
-
-    std::stringstream drop;
-    drop << "{\"command\": \"DROP\", \"package_id\": \"" << packageId
-         << "\", \"target_location\": [" << m_pickupZone[0] << ","
-         << m_pickupZone[1] << "," << m_pickupZone[2] << "]}";
-    m_mqttClient->sendPUBLISHpacket("warehouse/robot/" + robotId + "/command",
-                                    drop.str(),
-                                    1,
-                                    false,
-                                    false);
+    NS_LOG_INFO("DispatchDropFallback: broadcasting DROP mission for " << robotId << " pkg " << packageId);
+    BroadcastMission(robotId, "DROP", packageId, m_pickupZone, "");
     robotIt->second.status = "MOVING_TO_PICKUP_ZONE";
 }
 
 
 void
+WarehouseControllerApp::BroadcastMission(
+    const std::string& robotId,
+    const std::string& command,
+    const std::string& packageId,
+    const std::vector<double>& target,
+    const std::string& rackId,
+    const Package* pkg)
+{
+    if (!m_mqttClient || !m_mqttClient->IsConnected()) return;
+    std::ostringstream ms;
+    ms << "{\"robot_id\":\"" << robotId << "\""
+       << ",\"command\":\"" << command << "\""
+       << ",\"package_id\":\"" << packageId << "\""
+       << ",\"target_x\":" << target[0]
+       << ",\"target_y\":" << target[1]
+       << ",\"target_z\":" << target[2]
+       << ",\"rack_id\":\"" << rackId << "\"";
+    if (pkg) {
+        ms << ",\"pkg_width\":"  << pkg->width
+           << ",\"pkg_height\":" << pkg->height
+           << ",\"pkg_length\":" << pkg->length
+           << ",\"pkg_weight\":" << pkg->weight;
+    }
+    ms << "}";
+    m_mqttClient->sendPUBLISHpacket("warehouse/mission/broadcast", ms.str(), 0, false, false);
+    NS_LOG_INFO("Controller broadcast mission: " << command << " for " << robotId
+                << " pkg=" << packageId << " rack=" << rackId);
+}
+
+void
 WarehouseControllerApp::TrackObjectsPeriodic() {
-    // 1. Get ground truth moving robot positions
-    std::map<std::string, Vector> actualPositions;
-    for (uint32_t i = 0; i < NodeList::GetNNodes(); ++i) {
-        Ptr<Node> node = NodeList::GetNode(i);
-        for (uint32_t j = 0; j < node->GetNApplications(); ++j) {
-            Ptr<Application> app = node->GetApplication(j);
-            if (app->GetInstanceTypeId().GetName() == "ns3::WarehouseRobotApp") {
-                StringValue sv;
-                app->GetAttribute("SensorName", sv);
-                Ptr<MobilityModel> mm = node->GetObject<MobilityModel>();
-                if (mm) {
-                    actualPositions[sv.Get()] = mm->GetPosition();
+    // 1. Get ground truth moving robot positions.
+    //    Populate the mobility pointer cache once on the first call; reuse it every second.
+    if (m_robotMobilities.empty()) {
+        for (uint32_t i = 0; i < NodeList::GetNNodes(); ++i) {
+            Ptr<Node> node = NodeList::GetNode(i);
+            for (uint32_t j = 0; j < node->GetNApplications(); ++j) {
+                Ptr<Application> app = node->GetApplication(j);
+                if (app->GetInstanceTypeId().GetName() == "ns3::WarehouseRobotApp") {
+                    StringValue sv;
+                    app->GetAttribute("SensorName", sv);
+                    Ptr<MobilityModel> mm = node->GetObject<MobilityModel>();
+                    if (mm) {
+                        m_robotMobilities.emplace_back(sv.Get(), mm);
+                    }
                 }
             }
         }
+    }
+    std::map<std::string, Vector> actualPositions;
+    for (const auto& entry : m_robotMobilities) {
+        actualPositions[entry.first] = entry.second->GetPosition();
     }
 
     // 2. Fetch detected objects from ISAC
@@ -704,7 +723,7 @@ WarehouseControllerApp::TrackObjectsPeriodic() {
         Vector actualPos = robotPair.second;
 
         double minDistance = 1e9;
-        SionnaDetectionRecord bestDetection;
+        SionnaDetectionRecord bestDetection{};
         bool found = false;
 
         for (const auto& det : detections) {

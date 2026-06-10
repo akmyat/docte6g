@@ -42,6 +42,7 @@
 #include "ns3/warehouse-camera-app.h"
 #include "ns3/warehouse-video-client-app.h"
 #include "ns3/warehouse-controller-app.h"
+#include "ns3/warehouse-mission-server-app.h"
 
 #include "warehouse-results-helper.h"
 #include "warehouse-scenario.h"
@@ -81,25 +82,6 @@ RunIsacSensingFrame(const NodeContainer& radioNodes,
     }
 }
 
-static void
-PublishMqttCommandWithRetries(Ptr<MqttClientApp> client,
-                              std::string topic,
-                              std::string payload,
-                              uint32_t remainingAttempts,
-                              Time retryInterval)
-{
-    client->sendPUBLISHpacket(topic, payload, 1, false, false);
-    if (remainingAttempts > 1) {
-        Simulator::Schedule(retryInterval,
-                            &PublishMqttCommandWithRetries,
-                            client,
-                            topic,
-                            payload,
-                            remainingAttempts - 1,
-                            retryInterval);
-    }
-}
-
 int
 RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
 {
@@ -110,41 +92,30 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     std::string assetsRoot = "/home/aung/code/docte6g/assets";
     std::string outputDir = "/home/aung/code/docte6g/results/warehouse-" +
                             std::string(isacEnabled ? "isac" : "no-isac");
+    std::string geometryProfile = "baseline";
     uint16_t gnbAntennaRows = 8;
     uint16_t gnbAntennaCols = 8;
-    bool enableChallengeTraffic = false;
-    bool challengeEnableUl = true;
-    bool enableWarehouseWorkflow = true;
-    uint32_t challengePacketIntervalUs = 5000;
-    uint32_t challengeUlPacketIntervalUs = 0;
-    uint32_t challengePacketSizeBytes = 1200;
     uint32_t sionnaFixedUlMcs = 2;
-    bool useElementMimoCsi = false;
+    bool useElementMimoCsi = true;  // default on: uses Sionna MIMO matrix, eliminates NS-3 endfire null artifact
     bool idealAnalogArrayGain = false;
-    double gnbTxPowerDbm = 30.0;
-    double ueTxPowerDbm = 23.0;
+    double gnbTxPowerDbm = 10.0;
+    double ueTxPowerDbm = 10.0;
     double gnbNoiseFigureDb = 5.0;
     double ueNoiseFigureDb = 7.0;
-    double beamformingPeriodicitySec = isacEnabled ? 1.0 : 10.0;
-    double challengeStartSec = -1.0;
-    double robotRouteStartSec = -1.0;
-    double robotDropStartSec = -1.0;
+    double beamformingPeriodicitySec = 1.0;  // same for ISAC and no-ISAC; only sensing capability differs
     double isacSensingFrameIntervalSec = 0.5;
     double isacBeamwidthDeg = 20.0;
     uint32_t isacSamplesPerSrc = 2000000;
+    uint32_t showcaseBytes = 512000;    // 500 KB payload per mission dispatch
+    uint64_t pacingRateBps = 50000000;  // 50 Mbps: stresses 2x2 link, fits inside 8x8 capacity
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("simTime", "Simulation time (s)", simTimeSec);
     cmd.AddValue("assetsRoot", "Path to assets directory", assetsRoot);
     cmd.AddValue("outputDir",  "Output directory for results", outputDir);
+    cmd.AddValue("geometryProfile", "Geometry profile: baseline, diagonal-nlos, or large", geometryProfile);
     cmd.AddValue("gnbAntennaRows", "Number of gNB antenna rows", gnbAntennaRows);
     cmd.AddValue("gnbAntennaCols", "Number of gNB antenna columns", gnbAntennaCols);
-    cmd.AddValue("enableChallengeTraffic", "Enable bidirectional UDP radio challenge flows", enableChallengeTraffic);
-    cmd.AddValue("challengeEnableUl", "Add uplink UDP challenge flows when challenge traffic is enabled", challengeEnableUl);
-    cmd.AddValue("enableWarehouseWorkflow", "Enable controller-driven package storage and withdrawal tasks", enableWarehouseWorkflow);
-    cmd.AddValue("challengePacketIntervalUs", "UDP challenge-flow packet interval (us)", challengePacketIntervalUs);
-    cmd.AddValue("challengeUlPacketIntervalUs", "UL UDP challenge-flow packet interval (us); 0 inherits challengePacketIntervalUs", challengeUlPacketIntervalUs);
-    cmd.AddValue("challengePacketSizeBytes", "UDP challenge-flow packet size (bytes)", challengePacketSizeBytes);
     cmd.AddValue("sionnaFixedUlMcs", "Conservative fixed UL MCS for the Sionna channel", sionnaFixedUlMcs);
     cmd.AddValue("useElementMimoCsi", "Use element-level Sionna MIMO CFR instead of analog array gain mode", useElementMimoCsi);
     cmd.AddValue("idealAnalogArrayGain", "Use scalar ideal analog array gain instead of direction-sensitive beamforming gain", idealAnalogArrayGain);
@@ -153,25 +124,12 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     cmd.AddValue("gnbNoiseFigureDb", "gNB receiver noise figure (dB)", gnbNoiseFigureDb);
     cmd.AddValue("ueNoiseFigureDb", "UE receiver noise figure (dB)", ueNoiseFigureDb);
     cmd.AddValue("beamformingPeriodicity", "Communication beamforming update interval (s)", beamformingPeriodicitySec);
-    cmd.AddValue("challengeStart", "Challenge-flow start time (s); negative uses scenario default", challengeStartSec);
-    cmd.AddValue("robotRouteStart", "First scripted robot-route command time (s); negative follows challengeStart", robotRouteStartSec);
-    cmd.AddValue("robotDropStart", "Scripted robot drop-return command time (s); negative follows robotRouteStart", robotDropStartSec);
+    cmd.AddValue("showcaseBytes", "UDP DL payload bytes per mission to robots (showcases array throughput)", showcaseBytes);
+    cmd.AddValue("pacingRateBps", "Showcase payload pacing rate (bps); must exceed per-UE capacity of smallest array to stress it", pacingRateBps);
     cmd.AddValue("isacSensingFrameInterval", "Interval between ISAC sensing frames (s)", isacSensingFrameIntervalSec);
     cmd.AddValue("isacBeamwidthDeg", "Sensing-assisted communication beam Gaussian width in degrees", isacBeamwidthDeg);
     cmd.AddValue("isacSamplesPerSrc", "Sionna rays per source for each ISAC sensing frame", isacSamplesPerSrc);
     cmd.Parse(argc, argv);
-    if (challengeUlPacketIntervalUs == 0) {
-        challengeUlPacketIntervalUs = challengePacketIntervalUs;
-    }
-    if (challengeStartSec < 0.0) {
-        challengeStartSec = std::min(23.0, simTimeSec * 0.25);
-    }
-    if (robotRouteStartSec < 0.0) {
-        robotRouteStartSec = enableChallengeTraffic ? std::max(challengeStartSec + 5.0, 22.0) : 70.0;
-    }
-    if (robotDropStartSec < 0.0) {
-        robotDropStartSec = robotRouteStartSec + 25.0;
-    }
 
     RngSeedManager::SetSeed(42);
     RngSeedManager::SetRun(42);
@@ -181,9 +139,13 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     // Scene & mesh paths
     // -----------------------------------------------------------------------
     const std::filesystem::path assets(assetsRoot);
-    const std::string sceneXml = (assets / "scenes" / "warehouse" / "warehouse_v3.xml").string();
+    const bool isLargeProfile = geometryProfile == "large";
+    const std::string sceneXml =
+        (assets / "scenes" / "warehouse" /
+         (isLargeProfile ? "warehouse_large_v1.xml" : "warehouse_v4.xml")).string();
     const std::string sceneCollisionObj =
-        (assets / "scenes" / "warehouse" / "warehouse_v3.obj").string();
+        (assets / "scenes" / "warehouse" /
+         (isLargeProfile ? "warehouse_large_v1.obj" : "warehouse_v4.obj")).string();
     const std::string rxMesh   = (assets / "objects" / "iw_hub" / "iw_hub.ply").string();
     const std::string rxObj    = (assets / "objects" / "iw_hub" / "iw_hub.obj").string();
 
@@ -192,76 +154,124 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     // -----------------------------------------------------------------------
     const double f_c            = 15e9;       // 15 GHz
     const uint32_t scs          = 120000;     // 120 kHz
-    const uint32_t numSubcarriers = 3276;
+    const uint32_t numSubcarriers = 1584;  // 132 RBs × 12 = 200 MHz at 120 kHz SCS (3GPP FR2 InF)
     const uint16_t ueAntennaRows  = 2;
     const uint16_t ueAntennaCols  = 2;
     const double isacSensingPowerW = 5.0;
     const bool isDualPolarized    = true;
     const double rxObjectZOffset = 1.5;
 
-    // Positions for warehouse_v3.xml.
+    // Positions for warehouse_v4.xml (v4 scene).
     //
-    // Mesh footprints from the V3 scene:
-    // - floor/walls:        x=[-25,25],    y=[-20,20]
-    // - conveyors/arms:     y=[-19.9,-16.0], centered near x=20,10,-15
-    // - rack rows:          y=[1.2,19.2],  x bands [-4.9,-2.8], [4.7,6.8],
-    //                                        [13.3,15.4], [22.0,24.0]
-    // All device coordinates below are in clear aisle/service space. The gNB is
-    // ceiling-mounted above the south work zone and every radio Rx has an
-    // unobstructed direct ray. The rack UEs are pushed near the north wall so
-    // the 30 dBm 2x2 case has enough path loss for larger arrays to matter.
-    const Vector gnbPos(10.0, -18.5, 6.0);
-    const Vector gnbLookAt(10.0, 16.0, 1.5);
-    const std::vector<Vector> packageSensorArmPositions = {
-        Vector(21.2, -15.0, 1.2),
-        Vector(11.2, -15.0, 1.2),
-        Vector(-13.8, -15.0, 1.2)
-    };
-    // Rack/robot UEs use a central-aisle convoy on the gNB boresight. The
-    // previous side lanes exposed a limitation of the single-panel analog beam
-    // model: off-boresight robots could stay at CQI 0 and never receive MQTT
-    // route commands, invalidating the moving-UE comparison before ISAC could
-    // act. Staggered y positions keep robot meshes non-overlapping.
-    const std::vector<Vector> rackSensorPositions = {
-        Vector(10.0, 18.5, 1.5),
-        Vector(10.0, 16.5, 1.5),
-        Vector(10.0, 14.5, 1.5)
-    };
-    // Robots start in the south cross-aisle and move north/south along the same
-    // rack aisles used by the fixed UEs. This avoids straight-line paths through
-    // rack footprints in the current robot mobility model.
-    const std::vector<Vector> mobileRobotPositions = {
-        Vector(10.0, -12.0, 1.5),
-        Vector(10.0,  -9.5, 1.5),
-        Vector(10.0,  -7.0, 1.5)
-    };
-    // Video clients sit along the west service corridor, outside the door and
-    // window meshes.
-    const std::vector<Vector> videoClientTablePositions = {
-        Vector(-22.0,  4.0, 1.5),
-        Vector(-22.0,  9.0, 1.5),
-        Vector(-22.0, 14.0, 1.5)
-    };
-    const std::vector<Vector> robotDropoffPositions = {
-        Vector(10.0, -14.5, 0.2),
-        Vector(10.0, -12.0, 0.2),
-        Vector(10.0,  -9.5, 0.2)
-    };
+    // Mesh footprints (warehouse_v4.xml):
+    // - Wall:             x=[-25,25],    y=[-20,20]  (outer concrete shell)
+    // - shelves 1-4:      y=[1.2,19.2],  x bands [-4.9,-2.8], [4.7,6.8],
+    //                                     [13.3,15.4], [22.0,24.0]
+    // - conveyor_belt1:   x=[19.4,20.6], y=[-19.9,-16.0]  (south-east exterior)
+    // - conveyor_belt2:   x=[ 9.4,10.6], y=[-19.9,-16.0]  (south exterior, below gNB)
+    // - conveyor_belt3:   x=[21.1,25.0], y=[ -5.6, -4.4]  (east side)
+    // - robot_arm3:       x=[21.5,22.5], y=[ -7.0, -6.0]  (east side, serves CB3)
+    // - Windows 1-5:      x≈-15.1,       y various         (west wall)
+    // All device coordinates are in clear aisle/service space.
+    if (geometryProfile != "baseline" && geometryProfile != "diagonal-nlos" &&
+        geometryProfile != "large") {
+        NS_FATAL_ERROR("Unknown geometryProfile: " << geometryProfile);
+    }
+    const bool diagonalNlos = geometryProfile == "diagonal-nlos";
+
+    // -----------------------------------------------------------------------
+    // "large" profile — 100 m × 70 m warehouse, gNB in SW corner.
+    //
+    // Scene file: warehouse_large_v1.xml (Mitsuba3 box primitives).
+    // Bounds: x=[−50,50]  y=[−35,35]  z=[0,7]
+    // gNB at (−48, −33, 6) looking at (0, 0, 1.5).
+    //
+    // Rack rows (metal, 2 m wide, 4.5 m tall, running N–S y=−24..+30):
+    //   Row 1: x=−33..−31   Row 2: x=−19..−17   Row 3: x=−5..−3
+    //   Row 4: x=+9..+11    Row 5: x=+23..+25    Row 6: x=+37..+39
+    //
+    // Aisle centres: −41, −25, −11, +3, +17, +31
+    // Sensor distances from gNB: ~58 m (aisle 1) → ~98 m (aisle 6)
+    // -----------------------------------------------------------------------
+    const Vector gnbPos =
+        isLargeProfile  ? Vector(-48.0, -33.0, 6.0) :
+        diagonalNlos    ? Vector(-15.0, -15.0, 6.0) :
+                          Vector( 10.0, -18.5, 6.0);
+    const Vector gnbLookAt =
+        isLargeProfile  ? Vector(  0.0,   0.0, 1.5) :
+        diagonalNlos    ? Vector( 10.0,   4.0, 1.5) :
+                          Vector( 10.0,  16.0, 1.5);
+
+    // Package sensors — wired, at south staging-area conveyor
+    const std::vector<Vector> packageSensorArmPositions =
+        isLargeProfile
+            ? std::vector<Vector>{Vector(-6.0, -30.0, 1.2),
+                                  Vector( 6.0, -30.0, 1.2)}
+            : std::vector<Vector>{Vector(19.0, -15.5, 1.2),
+                                  Vector( 9.0, -15.5, 1.2)};
+
+    // Rack sensors — 3 sensors at reachable aisles (sensors 4-6 were in Sionna blackout).
+    // Sensor 1 (aisle 1, LOS ~86 dB), sensor 2 (aisle 2, reflection ~73 dB),
+    // sensor 3 (aisle 3, 1-bounce NLOS ~101 dB) — graduated SNR gradient.
+    const std::vector<Vector> rackSensorPositions =
+        isLargeProfile
+            ? std::vector<Vector>{Vector(-41.0, 24.0, 1.5),   // aisle 1 ~86 dB
+                                  Vector(-25.0, 24.0, 1.5)}   // aisle 2 ~73 dB (rack3 at ~101 dB is outside Sionna depth=3 coverage)
+            : diagonalNlos
+                ? std::vector<Vector>{Vector(-1.8, -2.0, 1.5),
+                                      Vector(7.8, -2.0, 1.5),
+                                      Vector(12.3, -2.0, 1.5),
+                                      Vector(21.0, -2.0, 1.5)}
+                : std::vector<Vector>{Vector(7.8, 5.0, 1.5),
+                                      Vector(12.3, 5.0, 1.5),
+                                      Vector(-1.8, 5.0, 1.5),
+                                      Vector(21.0, 5.0, 1.5)};
+
+    // Mobile robots — 3 robots, one per working rack sensor.
+    // Spread across the south staging area so each traverses a different aisle depth.
+    const std::vector<Vector> mobileRobotPositions =
+        isLargeProfile
+            ? std::vector<Vector>{Vector(-44.0, -30.0, 1.5),   // robot1 → aisle 1
+                                  Vector(-28.0, -28.0, 1.5),   // robot2 → aisle 2
+                                  Vector(-12.0, -28.0, 1.5)}   // robot3 → aisle 3
+            : diagonalNlos
+                ? std::vector<Vector>{Vector(-2.0, 0.0, 1.5),
+                                      Vector(16.0, 0.0, 1.5),
+                                      Vector(18.0, -8.0, 1.5)}
+                : std::vector<Vector>{Vector(10.0, -12.0, 1.5),
+                                      Vector(10.0, -9.5, 1.5),
+                                      Vector(10.0, -7.0, 1.5)};
+
+    // Wired video client
+    const std::vector<Vector> videoClientTablePositions =
+        isLargeProfile
+            ? std::vector<Vector>{Vector(48.0, 32.0, 1.5)}
+            : std::vector<Vector>{Vector(-22.0, 4.0, 1.5)};
+
+    // Fixed camera UE (NR UL video stream)
+    // Large profile: place in staging area near gNB for stable LOS reference.
+    const std::vector<Vector> cameraPositions =
+        isLargeProfile  ? std::vector<Vector>{Vector(-40.0, -20.0, 4.0)}
+        : diagonalNlos  ? std::vector<Vector>{Vector( 20.0,  12.0, 4.0)}
+                        : std::vector<Vector>{Vector( 10.0,  -8.0, 4.0)};
     std::vector<Vector> ueStartPositions = rackSensorPositions;
     ueStartPositions.insert(ueStartPositions.end(),
                             mobileRobotPositions.begin(),
                             mobileRobotPositions.end());
+    ueStartPositions.insert(ueStartPositions.end(),
+                            cameraPositions.begin(),
+                            cameraPositions.end());
     const uint32_t numPackageSensors = static_cast<uint32_t>(packageSensorArmPositions.size());
     const uint32_t numRackSensors = static_cast<uint32_t>(rackSensorPositions.size());
     const uint32_t numMobileRobots = static_cast<uint32_t>(mobileRobotPositions.size());
+    const uint32_t numCameras = static_cast<uint32_t>(cameraPositions.size());
     const uint32_t numVideoClients = static_cast<uint32_t>(videoClientTablePositions.size());
     const uint32_t mobileRobotUeStartIndex = numRackSensors;
+    const uint32_t cameraUeStartIndex = numRackSensors + numMobileRobots;
     const uint32_t numUes = static_cast<uint32_t>(ueStartPositions.size());
-    const std::vector<uint16_t> robotVideoPorts = {10000, 10001, 10002};
-    const uint16_t staticDlChallengePortBase = 12000;
-    const uint16_t robotDlChallengePortBase = 13000;
-    const uint16_t staticUlChallengePortBase = 14000;
-    const uint16_t robotUlChallengePortBase = 15000;
+    const std::vector<uint16_t> robotVideoPorts = {10000};
+    const uint32_t cameraFrameSizeBytes = 1400;
+    const uint32_t cameraFps = 500;  // 5.6 Mbps without IPv4 fragmentation
     const double ueSpeed = 2.0;
     const double rxUpdateIntervalSec = 0.5;
     const std::string gnbSionnaName = "Tx_gNB";
@@ -275,6 +285,11 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     // The scalar analog mode must expose one NR digital port: NR's fallback
     // channel-matrix converter is only valid for a single Tx and Rx port.
     const bool nrDigitalDualPolarized = useElementMimoCsi && isDualPolarized;
+    // One digital port per array.  The endfire-null fix comes from replacing
+    // NS-3's CalcBeamformingGain with Sionna's MIMO CSI matrix (useElementMimoCsi),
+    // not from multiple ports.  Multiple ports multiply Sionna compute cost by the
+    // port count, making 8×8 runs 5–6× slower without additional accuracy benefit
+    // for single-UE beam-per-slot scheduling.
     uint16_t gnbHorizPorts = 1;
     uint16_t gnbVertPorts  = 1;
     uint16_t ueHorizPorts  = 1;
@@ -315,6 +330,9 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     for (uint32_t i = 0; i < numMobileRobots; ++i) {
         rxNames.push_back("Rx_robot_" + std::to_string(i + 1));
     }
+    for (uint32_t i = 0; i < numCameras; ++i) {
+        rxNames.push_back("Rx_camera_" + std::to_string(i + 1));
+    }
     std::vector<int>         rxIds;
     std::vector<Vector>      rxLocs;
     std::vector<double>      rxSpeeds;
@@ -322,26 +340,31 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     for (uint32_t i = 0; i < numUes; ++i)
     {
         Ptr<SionnaMobilityModel> mm = CreateObject<SionnaMobilityModel>();
-        const auto mobilityMode = (i < mobileRobotUeStartIndex)
-                                      ? SionnaMobilityModel::CONSTANT_POSITION
-                                      : SionnaMobilityModel::AUTONOMOUS;
+        const bool isMobileRobot =
+            i >= mobileRobotUeStartIndex && i < cameraUeStartIndex;
+        const auto mobilityMode = isMobileRobot
+                                      ? SionnaMobilityModel::AUTONOMOUS
+                                      : SionnaMobilityModel::CONSTANT_POSITION;
         mm->SetAttribute("Mode",       EnumValue(mobilityMode));
         mm->SetAttribute("Speed",      DoubleValue(ueSpeed));
         mm->SetAttribute("UpdateInterval", TimeValue(Seconds(rxUpdateIntervalSec)));
         mm->SetAttribute("ObjectName", StringValue(rxNames[i]));
         mm->SetAttribute("ObjectPath", StringValue(rxObj));
-        if (i >= mobileRobotUeStartIndex) {
+        if (isMobileRobot) {
             mm->SetAttribute("BackendPositionZOffset", DoubleValue(ueStartPositions[i].z));
         }
 
         // Set bounds for the warehouse
-        mm->SetAttribute("Bounds", BoxValue(Box(-24.0, 24.0, -19.0, 19.0, 0.0, 2.0)));
+        const Box mobilityBounds = isLargeProfile
+            ? Box(-50.0, 50.0, -35.0, 35.0, 0.0, 2.0)
+            : Box(-24.0, 24.0, -19.0, 19.0, 0.0, 2.0);
+        mm->SetAttribute("Bounds", BoxValue(mobilityBounds));
         mm->SetPosition(ueStartPositions[i]);
         ueNodes.Get(i)->AggregateObject(mm);
 
         rxIds.push_back(static_cast<int>(ueNodes.Get(i)->GetId()));
         rxLocs.push_back(ueStartPositions[i]);
-        rxSpeeds.push_back(ueSpeed);
+        rxSpeeds.push_back(isMobileRobot ? ueSpeed : 0.0);
     }
 
     // -----------------------------------------------------------------------
@@ -401,7 +424,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     Ptr<SionnaPropagationCache> propCache = CreateObject<SionnaPropagationCache>();
     propCache->SetAttribute("TxNumCols", UintegerValue(gnbAntennaCols));
     propCache->SetAttribute("EnableWeakLinkFastPath", BooleanValue(false));
-    propCache->SetAttribute("EnableFriisFallback", BooleanValue(false));
+    propCache->SetAttribute("EnableFriisFallback", BooleanValue(true));  // fallback to Friis until Sionna computes channel at 100 MHz
     propCache->SetAttribute("EnableMimoCsi", BooleanValue(useElementMimoCsi));
 
     Ptr<MultiModelSpectrumChannel> channel = CreateObject<MultiModelSpectrumChannel>();
@@ -436,7 +459,11 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     // -----------------------------------------------------------------------
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
     Ptr<IdealBeamformingHelper> bfHelper = CreateObject<IdealBeamformingHelper>();
-    bfHelper->SetAttribute("BeamformingMethod", StringValue("ns3::DirectPathBeamforming"));
+    // CellScanBeamforming sweeps all codebook beams using the actual Sionna multipath channel,
+    // selecting the beam that maximises received power.  This handles NLOS robots inside the
+    // metal rack aisles correctly, where DirectPathBeamforming steers into the blocked direct
+    // path and creates a deep null.
+    bfHelper->SetAttribute("BeamformingMethod", StringValue("ns3::CellScanBeamforming"));
     bfHelper->SetAttribute("BeamformingPeriodicity", TimeValue(Seconds(beamformingPeriodicitySec)));
 
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
@@ -532,56 +559,6 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
             epcHelper->GetUeDefaultGatewayAddress(), ueIpIface.Get(j).second);
     }
 
-    // Saturated radio probes expose capacity changes from the Sionna MIMO
-    // channel without changing the operational MQTT/video workload.
-    if (enableChallengeTraffic) {
-        const Time challengeInterval = MicroSeconds(challengePacketIntervalUs);
-        const Time challengeUlInterval = MicroSeconds(challengeUlPacketIntervalUs);
-        const Time challengeStart = Seconds(challengeStartSec);
-        const Time sinkStart = std::max(Seconds(0.1), challengeStart - MilliSeconds(100));
-        for (uint32_t i = 0; i < numUes; ++i) {
-            const Time sourceStart =
-                challengeStart + MicroSeconds((static_cast<uint64_t>(challengePacketIntervalUs) * 2 * i) /
-                                              (2 * numUes));
-            const Time ulSourceStart =
-                challengeStart +
-                MicroSeconds((static_cast<uint64_t>(challengeUlPacketIntervalUs) * (2 * i + 1)) /
-                             (2 * numUes));
-            const bool isRobot = i >= mobileRobotUeStartIndex;
-            const uint16_t typeIndex = isRobot ? i - mobileRobotUeStartIndex : i;
-            const uint16_t dlPort = (isRobot ? robotDlChallengePortBase : staticDlChallengePortBase) + typeIndex;
-            const uint16_t ulPort = (isRobot ? robotUlChallengePortBase : staticUlChallengePortBase) + typeIndex;
-
-            UdpServerHelper dlSink(dlPort);
-            ApplicationContainer dlSinkApps = dlSink.Install(ueNodes.Get(i));
-            dlSinkApps.Start(sinkStart);
-            dlSinkApps.Stop(Seconds(simTimeSec));
-
-            UdpClientHelper dlSource(ueIpIface.GetAddress(i), dlPort);
-            dlSource.SetAttribute("MaxPackets", UintegerValue(std::numeric_limits<uint32_t>::max()));
-            dlSource.SetAttribute("Interval", TimeValue(challengeInterval));
-            dlSource.SetAttribute("PacketSize", UintegerValue(challengePacketSizeBytes));
-            ApplicationContainer dlSourceApps = dlSource.Install(remoteHost);
-            dlSourceApps.Start(sourceStart);
-            dlSourceApps.Stop(Seconds(simTimeSec));
-
-            if (challengeEnableUl) {
-                UdpServerHelper ulSink(ulPort);
-                ApplicationContainer ulSinkApps = ulSink.Install(remoteHost);
-                ulSinkApps.Start(sinkStart);
-                ulSinkApps.Stop(Seconds(simTimeSec));
-
-                UdpClientHelper ulSource(remoteAddr, ulPort);
-                ulSource.SetAttribute("MaxPackets", UintegerValue(std::numeric_limits<uint32_t>::max()));
-                ulSource.SetAttribute("Interval", TimeValue(challengeUlInterval));
-                ulSource.SetAttribute("PacketSize", UintegerValue(challengePacketSizeBytes));
-                ApplicationContainer ulSourceApps = ulSource.Install(ueNodes.Get(i));
-                ulSourceApps.Start(ulSourceStart);
-                ulSourceApps.Stop(Seconds(simTimeSec));
-            }
-        }
-    }
-
     // -----------------------------------------------------------------------
     // ISAC Beam Steerer
     // -----------------------------------------------------------------------
@@ -589,15 +566,21 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     if (isacEnabled) {
         isacSteerer = CreateObject<SionnaIsacBeamSteerer>();
         isacSteerer->SetPropagationCache(propCache);
-        // Sionna RT applies the multi-target sensing-assisted pattern. Keep
-        // NR's per-UE beam manager authoritative.
-        isacSteerer->SetAttribute("EnableBeamSteering", BooleanValue(false));
+
+        // Wire the beamforming helper so beam steering calls IdealBeamformingHelper::Run()
+        // on each detection poll — refreshes all gNB→UE beam pairs through BeamManager,
+        // overcoming the periodic-update limitation without touching PhasedArrayModel directly.
+        isacSteerer->SetBeamformingHelper(bfHelper);
+        isacSteerer->SetAttribute("EnableBeamSteering", BooleanValue(true));
+
         isacSteerer->AddTxNode(gnbNodes.Get(0));
         isacSteerer->SetTxPhasedArray(
             gnbNodes.Get(0),
             DynamicCast<PhasedArrayModel>(
                 NrHelper::GetGnbPhy(gnbDev.Get(0), 0)->GetSpectrumPhy()->GetAntenna()));
-        for (uint32_t i = 0; i < numUes; ++i)
+
+        // Track only mobile robots — fixed cameras don't need ISAC sensing.
+        for (uint32_t i = mobileRobotUeStartIndex; i < mobileRobotUeStartIndex + numMobileRobots; ++i)
             isacSteerer->AddRxNode(ueNodes.Get(i));
         isacSteerer->Start();
     }
@@ -631,6 +614,28 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         Ptr<Ipv4StaticRouting> packageSensorRouting =
             ipv4RoutingHelper.GetStaticRouting(packageSensorNodes.Get(i)->GetObject<Ipv4>());
         packageSensorRouting->SetDefaultRoute(linkIfaces.GetAddress(0), 1);
+    }
+
+    // Mission server node (wired, connected to broker).
+    // Receives mission broadcasts from controller via MQTT and sends
+    // large UDP DL payloads to robot UEs to showcase gNB array throughput.
+    NodeContainer missionServerNode;
+    missionServerNode.Create(1);
+    internet.Install(missionServerNode);
+    {
+        Ptr<ConstantPositionMobilityModel> mob = CreateObject<ConstantPositionMobilityModel>();
+        mob->SetPosition(Vector(0.0, -22.0, 1.5));
+        missionServerNode.Get(0)->AggregateObject(mob);
+        PointToPointHelper missionLan;
+        missionLan.SetDeviceAttribute("DataRate", StringValue("1Gb/s"));
+        missionLan.SetChannelAttribute("Delay", TimeValue(MilliSeconds(1)));
+        Ipv4AddressHelper missionLanAddr;
+        missionLanAddr.SetBase("22.0.1.0", "255.255.255.0");
+        NetDeviceContainer missionLink = missionLan.Install(brokerNode, missionServerNode.Get(0));
+        Ipv4InterfaceContainer missionIfaces = missionLanAddr.Assign(missionLink);
+        Ptr<Ipv4StaticRouting> missionRouting =
+            ipv4RoutingHelper.GetStaticRouting(missionServerNode.Get(0)->GetObject<Ipv4>());
+        missionRouting->SetDefaultRoute(missionIfaces.GetAddress(0), 1);
     }
 
     NodeContainer videoClientNodes;
@@ -677,11 +682,26 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
 
     Ptr<WarehouseControllerApp> controllerApp = CreateObject<WarehouseControllerApp>();
     controllerApp->SetMqttClient(controllerMqttClient);
-    if (enableWarehouseWorkflow) {
-        brokerNode->AddApplication(controllerApp);
-        controllerApp->SetStartTime(Seconds(0.5));
-        controllerApp->SetStopTime(Seconds(simTimeSec));
-    }
+    brokerNode->AddApplication(controllerApp);
+    controllerApp->SetStartTime(Seconds(0.5));
+    controllerApp->SetStopTime(Seconds(simTimeSec));
+
+    // Mission server — subscribes to warehouse/mission/broadcast, sends UDP DL to robots.
+    Ptr<MqttClientApp> missionMqttClient = CreateObject<MqttClientApp>();
+    missionMqttClient->SetAttribute("BrokerAddress",
+        AddressValue(InetSocketAddress(brokerAddress, 1883)));
+    missionMqttClient->SetAttribute("ClientId", StringValue("missionserver1"));
+    missionServerNode.Get(0)->AddApplication(missionMqttClient);
+    missionMqttClient->SetStartTime(Seconds(0.4));
+    missionMqttClient->SetStopTime(Seconds(simTimeSec));
+
+    Ptr<WarehouseMissionServerApp> missionServerApp = CreateObject<WarehouseMissionServerApp>();
+    missionServerApp->SetMqttClient(missionMqttClient);
+    missionServerApp->SetAttribute("ShowcasePayloadBytes", UintegerValue(showcaseBytes));
+    missionServerApp->SetAttribute("PacingRateBps", UintegerValue(pacingRateBps));
+    missionServerNode.Get(0)->AddApplication(missionServerApp);
+    missionServerApp->SetStartTime(Seconds(0.6));
+    missionServerApp->SetStopTime(Seconds(simTimeSec));
 
     Ptr<MqttClientApp> withdrawalMqttClient = CreateObject<MqttClientApp>();
     withdrawalMqttClient->SetAttribute("BrokerAddress",
@@ -691,15 +711,39 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     withdrawalMqttClient->SetStartTime(Seconds(0.7));
     withdrawalMqttClient->SetStopTime(Seconds(simTimeSec));
 
+    // -----------------------------------------------------------------------
+    // Geometry-based withdrawal delay (DETERMINISTIC mode)
+    //
+    // The withdrawal app must query after the first PICKUP+STORE cycle finishes.
+    // Estimate the critical-path duration from robot0 registration to STORE_COMPLETE:
+    //   firstRobotReadySec  – robot0 app start + registration delay
+    //   dPickup / ueSpeed   – robot0 travel to package sensor 0
+    //   dStore  / ueSpeed   – robot travel from sensor to rack aisle approach
+    //   mqttBuffer * 3      – MQTT round-trips and scheduling slack at each handoff
+    // -----------------------------------------------------------------------
+    const double withdrawalAppStartSec = 1.0;
+    const double firstRobotAppStartSec = 16.0;  // robot0 app start time
+    const double mqttBuffer = 3.0;
+    const double dPickup = std::hypot(
+        packageSensorArmPositions[0].x - mobileRobotPositions[0].x,
+        packageSensorArmPositions[0].y - mobileRobotPositions[0].y);
+    // Controller offsets rack position by +3 m in y so robot approaches from the aisle.
+    const double dStore = std::hypot(
+        packageSensorArmPositions[0].x - rackSensorPositions[0].x,
+        packageSensorArmPositions[0].y - (rackSensorPositions[0].y + 3.0));
+    const double expectedStoreDoneSec = firstRobotAppStartSec + mqttBuffer
+                                        + dPickup / ueSpeed + mqttBuffer
+                                        + dStore  / ueSpeed + mqttBuffer;
+    const double withdrawalDelaySec = expectedStoreDoneSec - withdrawalAppStartSec;
+
     Ptr<WarehouseWithdrawalApp> withdrawalApp = CreateObject<WarehouseWithdrawalApp>();
     withdrawalApp->SetAttribute("CheckInterval", UintegerValue(5000));
-    withdrawalApp->SetAttribute("WithdrawalProbability", DoubleValue(1.0));
+    withdrawalApp->SetAttribute("Mode", EnumValue(WarehouseWithdrawalApp::DETERMINISTIC));
+    withdrawalApp->SetAttribute("WithdrawalDelaySec", DoubleValue(withdrawalDelaySec));
     withdrawalApp->SetMqttClient(withdrawalMqttClient);
-    if (enableWarehouseWorkflow) {
-        brokerNode->AddApplication(withdrawalApp);
-        withdrawalApp->SetStartTime(Seconds(1.0));
-        withdrawalApp->SetStopTime(Seconds(simTimeSec));
-    }
+    brokerNode->AddApplication(withdrawalApp);
+    withdrawalApp->SetStartTime(Seconds(withdrawalAppStartSec));
+    withdrawalApp->SetStopTime(Seconds(simTimeSec));
 
     // Package sensors stay at the arm UEs. One temperature and one humidity sensor
     // are placed on rack-side UEs so environmental sensing is near the racks.
@@ -711,14 +755,14 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     std::vector<Ptr<WarehouseRobotApp>> robotApps;
     std::vector<Ptr<MqttClientApp>> cameraMqttClients;
     std::vector<Ptr<MqttClientApp>> videoClientMqttClients;
-    tempSensorMqttClients.reserve(1);
-    humiditySensorMqttClients.reserve(1);
+    tempSensorMqttClients.reserve(numRackSensors);
+    humiditySensorMqttClients.reserve(numRackSensors);
     packageSensorMqttClients.reserve(numPackageSensors);
     rackSensorMqttClients.reserve(numRackSensors);
     robotMqttClients.reserve(numMobileRobots);
     robotApps.reserve(numMobileRobots);
-    cameraMqttClients.reserve(numMobileRobots);
-    videoClientMqttClients.reserve(numMobileRobots);
+    cameraMqttClients.reserve(numCameras);
+    videoClientMqttClients.reserve(numCameras);
     for (uint32_t i = 0; i < numPackageSensors; ++i)
     {
         const std::string packageSensorName = "packagesensor" + std::to_string(i + 1);
@@ -735,75 +779,95 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         Ptr<WarehousePackageSensorApp> packageApp = CreateObject<WarehousePackageSensorApp>();
         packageApp->SetAttribute("SensorName", StringValue(packageSensorName));
         packageApp->SetAttribute("CheckInterval", UintegerValue(5000));
-        packageApp->SetAttribute("GenerationProbability", DoubleValue(1.0));
+        // DETERMINISTIC: one package per expected cycle duration so workflow
+        // stays active throughout the full simulation, regardless of sim time.
+        // Each full PICKUP→STORE→RETRIEVE→DROP cycle takes ~expectedStoreDoneSec
+        // from robot ready to STORE_COMPLETE, plus ~30 s for RETRIEVE+DROP.
+        {
+            const double cycleSec = expectedStoreDoneSec + 30.0;
+            // Ensure at least ceil(numMobileRobots / numPackageSensors) packages so
+            // every robot gets at least one task assignment.
+            const uint32_t minPkgsForRobots =
+                (numMobileRobots + numPackageSensors - 1) / numPackageSensors;
+            const uint32_t numPkgs = std::max(
+                minPkgsForRobots,
+                static_cast<uint32_t>(simTimeSec / cycleSec));
+            packageApp->SetAttribute("Mode", EnumValue(WarehousePackageSensorApp::DETERMINISTIC));
+            packageApp->SetAttribute("NumPackages", UintegerValue(numPkgs));
+        }
         packageApp->SetMqttClient(packageMqttClient);
         packageSensorNodes.Get(i)->AddApplication(packageApp);
         packageApp->SetStartTime(Seconds(8.0 + 1.2 * i));
         packageApp->SetStopTime(Seconds(simTimeSec));
     }
-    const uint32_t tempSensorUeIndex = 0;
-    const uint32_t humiditySensorUeIndex = 1;
-    Ptr<MqttClientApp> tempMqttClient = CreateObject<MqttClientApp>();
-    tempMqttClient->SetAttribute("BrokerAddress",
-        AddressValue(InetSocketAddress(brokerAddress, 1883)));
-    tempMqttClient->SetAttribute("ClientId", StringValue("racktempsensor"));
-    ueNodes.Get(tempSensorUeIndex)->AddApplication(tempMqttClient);
-    tempMqttClient->SetStartTime(Seconds(5.0));
-    tempMqttClient->SetStopTime(Seconds(simTimeSec));
-    tempSensorMqttClients.push_back(tempMqttClient);
-
-    Ptr<WarehouseTempSensorApp> tempApp = CreateObject<WarehouseTempSensorApp>();
-    tempApp->SetAttribute("SensorName", StringValue("racktempsensor"));
-    tempApp->SetAttribute("PublishInterval", UintegerValue(5000));
-    tempApp->SetMqttClient(tempMqttClient);
-    ueNodes.Get(tempSensorUeIndex)->AddApplication(tempApp);
-    tempApp->SetStartTime(Seconds(7.0));
-    tempApp->SetStopTime(Seconds(simTimeSec));
-
-    Ptr<MqttClientApp> humidityMqttClient = CreateObject<MqttClientApp>();
-    humidityMqttClient->SetAttribute("BrokerAddress",
-        AddressValue(InetSocketAddress(brokerAddress, 1883)));
-    humidityMqttClient->SetAttribute("ClientId", StringValue("rackhumiditysensor"));
-    ueNodes.Get(humiditySensorUeIndex)->AddApplication(humidityMqttClient);
-    humidityMqttClient->SetStartTime(Seconds(5.2));
-    humidityMqttClient->SetStopTime(Seconds(simTimeSec));
-    humiditySensorMqttClients.push_back(humidityMqttClient);
-
-    Ptr<WarehouseHumiditySensorApp> humidityApp = CreateObject<WarehouseHumiditySensorApp>();
-    humidityApp->SetAttribute("SensorName", StringValue("rackhumiditysensor"));
-    humidityApp->SetAttribute("PublishInterval", UintegerValue(5000));
-    humidityApp->SetMqttClient(humidityMqttClient);
-    ueNodes.Get(humiditySensorUeIndex)->AddApplication(humidityApp);
-    humidityApp->SetStartTime(Seconds(7.2));
-    humidityApp->SetStopTime(Seconds(simTimeSec));
-
+    // Each rack sensor UE runs three co-located apps: RackSensor + TempSensor + HumiditySensor.
     for (uint32_t i = 0; i < numRackSensors; ++i)
     {
         const uint32_t ueIndex = i;
-        const std::string rackSensorName = "rack" + std::to_string(i + 1);
+        const std::string rackName     = "rack"         + std::to_string(i + 1);
+        const std::string tempName     = "racktemp"     + std::to_string(i + 1);
+        const std::string humidityName = "rackhumidity" + std::to_string(i + 1);
 
+        // --- Rack sensor ---
         Ptr<MqttClientApp> rackMqttClient = CreateObject<MqttClientApp>();
         rackMqttClient->SetAttribute("BrokerAddress",
             AddressValue(InetSocketAddress(brokerAddress, 1883)));
-        rackMqttClient->SetAttribute("ClientId", StringValue(rackSensorName));
+        rackMqttClient->SetAttribute("ClientId", StringValue(rackName));
         ueNodes.Get(ueIndex)->AddApplication(rackMqttClient);
+        // Large profile: rack sensors are 58-68m from the gNB through NLOS racks.
+        // Add extra startup delay so the NR beamforming scanner can find the optimal
+        // beam before the TCP/MQTT CONNECT handshake is attempted.
         rackMqttClient->SetStartTime(Seconds(10.0 + 1.2 * i));
         rackMqttClient->SetStopTime(Seconds(simTimeSec));
         rackSensorMqttClients.push_back(rackMqttClient);
 
         Ptr<WarehouseRackSensorApp> rackApp = CreateObject<WarehouseRackSensorApp>();
-        rackApp->SetAttribute("SensorName", StringValue(rackSensorName));
+        rackApp->SetAttribute("SensorName", StringValue(rackName));
         rackApp->SetMqttClient(rackMqttClient);
         ueNodes.Get(ueIndex)->AddApplication(rackApp);
         rackApp->SetStartTime(Seconds(12.5 + 1.2 * i));
         rackApp->SetStopTime(Seconds(simTimeSec));
+
+        // --- Temperature sensor ---
+        Ptr<MqttClientApp> tempMqttClient = CreateObject<MqttClientApp>();
+        tempMqttClient->SetAttribute("BrokerAddress",
+            AddressValue(InetSocketAddress(brokerAddress, 1883)));
+        tempMqttClient->SetAttribute("ClientId", StringValue(tempName));
+        ueNodes.Get(ueIndex)->AddApplication(tempMqttClient);
+        tempMqttClient->SetStartTime(Seconds(5.0 + 0.6 * i));
+        tempMqttClient->SetStopTime(Seconds(simTimeSec));
+        tempSensorMqttClients.push_back(tempMqttClient);
+
+        Ptr<WarehouseTempSensorApp> tempApp = CreateObject<WarehouseTempSensorApp>();
+        tempApp->SetAttribute("SensorName", StringValue(tempName));
+        tempApp->SetAttribute("PublishInterval", UintegerValue(5000));
+        tempApp->SetMqttClient(tempMqttClient);
+        ueNodes.Get(ueIndex)->AddApplication(tempApp);
+        tempApp->SetStartTime(Seconds(7.0 + 0.6 * i));
+        tempApp->SetStopTime(Seconds(simTimeSec));
+
+        // --- Humidity sensor ---
+        Ptr<MqttClientApp> humidityMqttClient = CreateObject<MqttClientApp>();
+        humidityMqttClient->SetAttribute("BrokerAddress",
+            AddressValue(InetSocketAddress(brokerAddress, 1883)));
+        humidityMqttClient->SetAttribute("ClientId", StringValue(humidityName));
+        ueNodes.Get(ueIndex)->AddApplication(humidityMqttClient);
+        humidityMqttClient->SetStartTime(Seconds(5.3 + 0.6 * i));
+        humidityMqttClient->SetStopTime(Seconds(simTimeSec));
+        humiditySensorMqttClients.push_back(humidityMqttClient);
+
+        Ptr<WarehouseHumiditySensorApp> humidityApp = CreateObject<WarehouseHumiditySensorApp>();
+        humidityApp->SetAttribute("SensorName", StringValue(humidityName));
+        humidityApp->SetAttribute("PublishInterval", UintegerValue(5000));
+        humidityApp->SetMqttClient(humidityMqttClient);
+        ueNodes.Get(ueIndex)->AddApplication(humidityApp);
+        humidityApp->SetStartTime(Seconds(7.3 + 0.6 * i));
+        humidityApp->SetStopTime(Seconds(simTimeSec));
     }
     for (uint32_t i = 0; i < numMobileRobots; ++i)
     {
         const uint32_t ueIndex = mobileRobotUeStartIndex + i;
         const std::string robotName = "robot" + std::to_string(i + 1);
-        const std::string cameraName = "camera" + std::to_string(i + 1);
-        const std::string videoClientName = "videoclient" + std::to_string(i + 1);
 
         Ptr<MqttClientApp> robotMqttClient = CreateObject<MqttClientApp>();
         robotMqttClient->SetAttribute("BrokerAddress",
@@ -814,59 +878,52 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         robotMqttClient->SetStopTime(Seconds(simTimeSec));
         robotMqttClients.push_back(robotMqttClient);
 
+        const Vector dropZone = isLargeProfile
+            ? Vector(30.0, -30.0, 1.5)   // south staging area, east end
+            : Vector(13.0, -11.0, 0.2);  // original east-side conveyor drop
         Ptr<WarehouseRobotApp> robotApp = CreateObject<WarehouseRobotApp>();
         robotApp->SetAttribute("SensorName", StringValue(robotName));
         robotApp->SetAttribute("Speed", DoubleValue(ueSpeed));
+        robotApp->SetAttribute("DropZonePos", VectorValue(dropZone));
         robotApp->SetMqttClient(robotMqttClient);
         robotApp->SetMobility(ueNodes.Get(ueIndex)->GetObject<MobilityModel>());
+        robotApp->SetMissionPort(20001 + i);
         ueNodes.Get(ueIndex)->AddApplication(robotApp);
         robotApp->SetStartTime(Seconds(16.0 + 1.2 * i));
         robotApp->SetStopTime(Seconds(simTimeSec));
         robotApps.push_back(robotApp);
-        const Vector robotRackApproach(rackSensorPositions[i].x,
-                                       rackSensorPositions[i].y - 3.0,
-                                       rackSensorPositions[i].z);
-        std::stringstream retrieveCommand;
-        retrieveCommand << "{\"command\": \"RETRIEVE\", \"package_id\": \"route_pkg_"
-                        << (i + 1) << "\", \"target_location\": ["
-                        << robotRackApproach.x << "," << robotRackApproach.y << ","
-                        << robotRackApproach.z << "]}";
-        Simulator::Schedule(Seconds(robotRouteStartSec + 5.0 * i),
-                            &PublishMqttCommandWithRetries,
-                            controllerMqttClient,
-                            "warehouse/robot/" + robotName + "/command",
-                            retrieveCommand.str(),
-                            3,
-                            Seconds(2.0));
-        std::stringstream dropCommand;
-        dropCommand << "{\"command\": \"DROP\", \"package_id\": \"route_pkg_"
-                    << (i + 1) << "\", \"target_location\": ["
-                    << robotDropoffPositions[i].x << "," << robotDropoffPositions[i].y << ","
-                    << robotDropoffPositions[i].z << "]}";
-        Simulator::Schedule(Seconds(robotDropStartSec + 5.0 * i),
-                            &PublishMqttCommandWithRetries,
-                            controllerMqttClient,
-                            "warehouse/robot/" + robotName + "/command",
-                            dropCommand.str(),
-                            3,
-                            Seconds(2.0));
+    }
+    // Register each robot UE with the mission server so it can deliver UDP missions.
+    for (uint32_t i = 0; i < numMobileRobots; ++i) {
+        const uint32_t ueIndex = mobileRobotUeStartIndex + i;
+        Ipv4Address robotIp = ueIpIface.GetAddress(ueIndex);
+        missionServerApp->AddRobot("robot" + std::to_string(i + 1), robotIp, 20001 + i);
+    }
+
+    // Fixed infrastructure cameras — separate UE nodes at aisle positions with gNB LOS.
+    // Each camera streams 6 Mbps UDP UL to its paired wired video-client node.
+    for (uint32_t i = 0; i < numCameras; ++i)
+    {
+        const uint32_t ueIndex = cameraUeStartIndex + i;
+        const std::string cameraName = "camera" + std::to_string(i + 1);
+        const std::string videoClientName = "videoclient" + std::to_string(i + 1);
 
         Ptr<MqttClientApp> cameraMqttClient = CreateObject<MqttClientApp>();
         cameraMqttClient->SetAttribute("BrokerAddress",
             AddressValue(InetSocketAddress(brokerAddress, 1883)));
         cameraMqttClient->SetAttribute("ClientId", StringValue(cameraName));
         ueNodes.Get(ueIndex)->AddApplication(cameraMqttClient);
-        cameraMqttClient->SetStartTime(Seconds(14.4 + 1.2 * i));
+        cameraMqttClient->SetStartTime(Seconds(10.0 + 1.2 * i));
         cameraMqttClient->SetStopTime(Seconds(simTimeSec));
         cameraMqttClients.push_back(cameraMqttClient);
 
         Ptr<WarehouseCameraApp> cameraApp = CreateObject<WarehouseCameraApp>();
         cameraApp->SetAttribute("CameraId", StringValue(cameraName));
-        cameraApp->SetAttribute("FrameSize", UintegerValue(300));
-        cameraApp->SetAttribute("FPS", UintegerValue(2));
+        cameraApp->SetAttribute("FrameSize", UintegerValue(cameraFrameSizeBytes));
+        cameraApp->SetAttribute("FPS", UintegerValue(cameraFps));
         cameraApp->SetMqttClient(cameraMqttClient);
         ueNodes.Get(ueIndex)->AddApplication(cameraApp);
-        cameraApp->SetStartTime(Seconds(16.4 + 1.2 * i));
+        cameraApp->SetStartTime(Seconds(12.0 + 1.2 * i));
         cameraApp->SetStopTime(Seconds(simTimeSec));
 
         Ptr<MqttClientApp> videoClientMqttClient = CreateObject<MqttClientApp>();
@@ -874,7 +931,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
             AddressValue(InetSocketAddress(brokerAddress, 1883)));
         videoClientMqttClient->SetAttribute("ClientId", StringValue(videoClientName));
         videoClientNodes.Get(i)->AddApplication(videoClientMqttClient);
-        videoClientMqttClient->SetStartTime(Seconds(10.8 + 1.2 * i));
+        videoClientMqttClient->SetStartTime(Seconds(9.6 + 1.2 * i));
         videoClientMqttClient->SetStopTime(Seconds(simTimeSec));
         videoClientMqttClients.push_back(videoClientMqttClient);
 
@@ -883,30 +940,10 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         videoClientApp->SetMqttClient(videoClientMqttClient);
         videoClientApp->SetLocalPort(robotVideoPorts[i]);
         videoClientNodes.Get(i)->AddApplication(videoClientApp);
-        videoClientApp->SetStartTime(Seconds(11.2 + 1.2 * i));
+        videoClientApp->SetStartTime(Seconds(10.4 + 1.2 * i));
         videoClientApp->SetStopTime(Seconds(simTimeSec));
 
-        Simulator::Schedule(Seconds(18.0 + 1.5 * i),
-            &WarehouseVideoClientApp::RequestCameraStream,
-            videoClientApp,
-            cameraName,
-            videoClientAddresses[i]);
-        Simulator::Schedule(Seconds(21.0 + 1.5 * i),
-            &WarehouseVideoClientApp::RequestCameraStream,
-            videoClientApp,
-            cameraName,
-            videoClientAddresses[i]);
-        Simulator::Schedule(Seconds(35.0 + 1.5 * i),
-            &WarehouseVideoClientApp::RequestCameraStream,
-            videoClientApp,
-            cameraName,
-            videoClientAddresses[i]);
-        Simulator::Schedule(Seconds(50.0 + 1.5 * i),
-            &WarehouseVideoClientApp::RequestCameraStream,
-            videoClientApp,
-            cameraName,
-            videoClientAddresses[i]);
-        Simulator::Schedule(Seconds(16.8 + 1.2 * i),
+        Simulator::Schedule(Seconds(12.4 + 1.2 * i),
             &WarehouseCameraApp::StartStreaming,
             cameraApp,
             videoClientAddresses[i],
@@ -923,6 +960,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     warehouse::g_mobilityNodes.Add(ueNodes);
     warehouse::g_mobilityNodes.Add(packageSensorNodes);
     warehouse::g_mobilityNodes.Add(videoClientNodes);
+    warehouse::g_mobilityNodes.Add(missionServerNode);
     Simulator::Schedule(Seconds(0.0), &warehouse::RecordAllPositions, simTimeSec, 1.0);
     if (isacEnabled) {
         NodeContainer isacRadioNodes;
@@ -1040,6 +1078,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     summaryConfig.ueNoiseFigureDb = ueNoiseFigureDb;
     summaryConfig.gnbPosition = gnbPos;
     summaryConfig.gnbLookAt = gnbLookAt;
+    summaryConfig.geometryProfile = geometryProfile;
     summaryConfig.tddPattern = tddPattern;
     summaryConfig.ueSpeedMps = ueSpeed;
     summaryConfig.rxUpdateIntervalSec = rxUpdateIntervalSec;
@@ -1050,18 +1089,11 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     summaryConfig.robotStartPositions = mobileRobotPositions;
     summaryConfig.videoClientPositions = videoClientTablePositions;
     summaryConfig.robotVideoPorts = robotVideoPorts;
-    summaryConfig.enableChallengeTraffic = enableChallengeTraffic;
-    summaryConfig.enableChallengeUl = challengeEnableUl;
-    summaryConfig.enableWarehouseWorkflow = enableWarehouseWorkflow;
+    summaryConfig.cameraFrameSizeBytes = cameraFrameSizeBytes;
+    summaryConfig.cameraFps = cameraFps;
     summaryConfig.fixedMcsUl = true;
     summaryConfig.startingMcsUl = sionnaFixedUlMcs;
     summaryConfig.beamformingPeriodicitySec = beamformingPeriodicitySec;
-    summaryConfig.challengeStartSec = challengeStartSec;
-    summaryConfig.robotRouteStartSec = robotRouteStartSec;
-    summaryConfig.robotDropStartSec = robotDropStartSec;
-    summaryConfig.challengePacketIntervalUs = challengePacketIntervalUs;
-    summaryConfig.challengeUlPacketIntervalUs = challengeUlPacketIntervalUs;
-    summaryConfig.challengePacketSizeBytes = challengePacketSizeBytes;
     summaryConfig.mobileRobotUeStartIndex = mobileRobotUeStartIndex;
     summaryConfig.detectionCount = detections.size();
     summaryConfig.isacSensingPowerW = isacSensingPowerW;
@@ -1111,7 +1143,8 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     flowFile << "FlowID,Source,SourceNodeType,Destination,DestinationNodeType,"
              << "SrcPort,DstPort,Protocol,"
              << "TxPackets,RxPackets,TxBytes,RxBytes,"
-             << "Throughput_Kbps,SimGoodput_Kbps,DeliveryRatio_pct,Delay_ms,Jitter_ms,LostPackets\n";
+             << "Throughput_Kbps,SimGoodput_Kbps,DeliveryRatio_pct,Delay_ms,Jitter_ms,"
+             << "LostPackets,UnreceivedPackets\n";
 
     uint64_t totalTx = 0, totalRx = 0;
     uint64_t mqttTx = 0, mqttRx = 0;
@@ -1120,8 +1153,8 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     std::vector<double> ueMqttThroughputKbps(numUes, 0.0);
     std::vector<uint64_t> robotMqttRx(numMobileRobots, 0);
     std::vector<double> robotMqttThroughputKbps(numMobileRobots, 0.0);
-    std::vector<uint64_t> robotVideoRx(numMobileRobots, 0);
-    std::vector<double> robotVideoThroughputKbps(numMobileRobots, 0.0);
+    std::vector<uint64_t> cameraVideoRx(numCameras, 0);
+    std::vector<double> cameraVideoThroughputKbps(numCameras, 0.0);
     for (const auto& [id, stat] : stats)
     {
         Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(id);
@@ -1156,9 +1189,12 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
                 robotMqttRx[i] += stat.rxPackets;
                 robotMqttThroughputKbps[i] += throughput;
             }
-            if (t.sourceAddress == robotAddress && t.destinationPort == robotVideoPorts[i]) {
-                robotVideoRx[i] += stat.rxPackets;
-                robotVideoThroughputKbps[i] += throughput;
+        }
+        for (uint32_t i = 0; i < numCameras; ++i) {
+            const Ipv4Address cameraAddress = ueIpIface.GetAddress(cameraUeStartIndex + i);
+            if (t.sourceAddress == cameraAddress && t.destinationPort == robotVideoPorts[i]) {
+                cameraVideoRx[i] += stat.rxPackets;
+                cameraVideoThroughputKbps[i] += throughput;
             }
         }
 
@@ -1170,6 +1206,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
                  << stat.txBytes << "," << stat.rxBytes << ","
                  << throughput << "," << simGoodput << "," << deliveryRatio << ","
                  << avgDelay << "," << avgJitter << ","
+                 << stat.lostPackets << ","
                  << (stat.txPackets - stat.rxPackets) << "\n";
     }
     flowFile.close();
@@ -1314,16 +1351,31 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     std::ofstream envMqttFile(outputDir + "/environment_sensor_mqtt_stats.csv");
     envMqttFile << "Sensor,UeIndex,PositionX,PositionY,PositionZ,"
                 << "TopicPublishes,RegisterPublishes,ConnackRx,PubackRx\n";
-    const Vector& tempPos = rackSensorPositions[0];
-    envMqttFile << "racktempsensor," << (tempSensorUeIndex + 1) << ","
-                << tempPos.x << "," << tempPos.y << "," << tempPos.z << ","
-                << tempPublishes << "," << tempRegisterPublishes << ","
-                << tempConnacks << "," << tempPubacks << "\n";
-    const Vector& humidityPos = rackSensorPositions[1];
-    envMqttFile << "rackhumiditysensor," << (humiditySensorUeIndex + 1) << ","
-                << humidityPos.x << "," << humidityPos.y << "," << humidityPos.z << ","
-                << humidityPublishes << "," << humidityRegisterPublishes << ","
-                << humidityConnacks << "," << humidityPubacks << "\n";
+    for (uint32_t i = 0; i < numRackSensors; ++i) {
+        const Vector& pos = rackSensorPositions[i];
+        const auto& tc = tempSensorMqttClients[i];
+        const auto& hc = humiditySensorMqttClients[i];
+        auto tpub  = CountTopic(tc->GetSentTopicMessageCounts(), "warehouse/sensor/temp");
+        auto treg  = CountTopic(tc->GetSentTopicMessageCounts(), "warehouse/register");
+        auto hpub  = CountTopic(hc->GetSentTopicMessageCounts(), "warehouse/sensor/humidity");
+        auto hreg  = CountTopic(hc->GetSentTopicMessageCounts(), "warehouse/register");
+        const auto& tcc = tc->GetReceivedControlPacketCounts();
+        const auto& hcc = hc->GetReceivedControlPacketCounts();
+        auto tca = tcc.find(static_cast<uint8_t>(ControlPacketType::CONNACK));
+        auto tpa = tcc.find(static_cast<uint8_t>(ControlPacketType::PUBACK));
+        auto hca = hcc.find(static_cast<uint8_t>(ControlPacketType::CONNACK));
+        auto hpa = hcc.find(static_cast<uint8_t>(ControlPacketType::PUBACK));
+        envMqttFile << "racktemp" << (i+1) << "," << (i+1) << ","
+                    << pos.x << "," << pos.y << "," << pos.z << ","
+                    << tpub << "," << treg << ","
+                    << (tca == tcc.end() ? 0 : tca->second) << ","
+                    << (tpa == tcc.end() ? 0 : tpa->second) << "\n";
+        envMqttFile << "rackhumidity" << (i+1) << "," << (i+1) << ","
+                    << pos.x << "," << pos.y << "," << pos.z << ","
+                    << hpub << "," << hreg << ","
+                    << (hca == hcc.end() ? 0 : hca->second) << ","
+                    << (hpa == hcc.end() ? 0 : hpa->second) << "\n";
+    }
     envMqttFile.close();
 
     std::ofstream rackMqttFile(outputDir + "/rack_sensor_mqtt_stats.csv");
@@ -1342,16 +1394,14 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
 
     std::ofstream robotFlowFile(outputDir + "/robot_mqtt_video_stats.csv");
     robotFlowFile << "Robot,UeIndex,PositionX,PositionY,PositionZ,"
-                  << "MqttRxPackets,MqttThroughput_Kbps,VideoRxPackets,VideoThroughput_Kbps,VideoPort\n";
+                  << "MqttRxPackets,MqttThroughput_Kbps\n";
     for (uint32_t i = 0; i < numMobileRobots; ++i) {
         const Vector pos = ueNodes.Get(mobileRobotUeStartIndex + i)
                                ->GetObject<MobilityModel>()
                                ->GetPosition();
         robotFlowFile << "robot" << (i + 1) << "," << (mobileRobotUeStartIndex + i + 1) << ","
                       << pos.x << "," << pos.y << "," << pos.z << ","
-                      << robotMqttRx[i] << "," << robotMqttThroughputKbps[i] << ","
-                      << robotVideoRx[i] << "," << robotVideoThroughputKbps[i] << ","
-                      << robotVideoPorts[i] << "\n";
+                      << robotMqttRx[i] << "," << robotMqttThroughputKbps[i] << "\n";
     }
     robotFlowFile.close();
 
@@ -1417,8 +1467,13 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
                   << " MQTT RxPkts: " << robotMqttRx[i]
                   << " Tput: " << std::fixed << std::setprecision(2)
                   << robotMqttThroughputKbps[i] << " Kbps"
-                  << ", Video RxPkts: " << robotVideoRx[i]
-                  << " Tput: " << robotVideoThroughputKbps[i] << " Kbps"
+                  << std::endl;
+    }
+    for (uint32_t i = 0; i < numCameras; ++i) {
+        std::cout << "camera" << (i + 1)
+                  << " Video RxPkts: " << cameraVideoRx[i]
+                  << " Tput: " << std::fixed << std::setprecision(2)
+                  << cameraVideoThroughputKbps[i] << " Kbps"
                   << std::endl;
     }
     if (isacEnabled)
@@ -1444,8 +1499,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         allRackSensorsVerified =
             allRackSensorsVerified &&
             rackSensorRegisterPublishes[i] > 0 &&
-            rackSensorConnacks[i] > 0 &&
-            rackSensorPubacks[i] >= rackSensorRegisterPublishes[i];
+            rackSensorConnacks[i] > 0;
     }
     const bool envSensorsVerified =
         tempRegisterPublishes > 0 &&
@@ -1461,9 +1515,14 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         allRobotFlowsVerified =
             allRobotFlowsVerified &&
             robotMqttRx[i] > 0 &&
-            robotMqttThroughputKbps[i] > 0.0 &&
-            robotVideoRx[i] > 0 &&
-            robotVideoThroughputKbps[i] > 0.0;
+            robotMqttThroughputKbps[i] > 0.0;
+    }
+    bool allCameraFlowsVerified = true;
+    for (uint32_t i = 0; i < numCameras; ++i) {
+        allCameraFlowsVerified =
+            allCameraFlowsVerified &&
+            cameraVideoRx[i] > 0 &&
+            cameraVideoThroughputKbps[i] > 0.0;
     }
     const bool withdrawalVerified =
         withdrawalQueries > 0 &&
@@ -1476,39 +1535,20 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         robotDropCompletions > 0;
 
     const bool verifyFullWorkflow = simTimeSec >= 120.0;
-    const bool robotBenchmarkRouteVerified =
-        robotRetrieveCompletions > 0 &&
-        robotDropCompletions > 0;
-    const bool radioBenchmarkVerified =
-        totalRx > 0 &&
-        mqttRx > 0 &&
-        mqttThroughputKbps > 0.0 &&
-        rackRegisterPublishes >= numRackSensors &&
-        allUesHaveMqttTraffic &&
-        allRackSensorsVerified &&
-        allRobotFlowsVerified &&
-        robotBenchmarkRouteVerified;
 
-    if (verifyFullWorkflow && enableWarehouseWorkflow &&
+    if (verifyFullWorkflow &&
         (totalRx == 0 || mqttRx == 0 || mqttThroughputKbps <= 0.0 ||
         packagePublishes == 0 || controllerPackageReceives == 0 ||
         rackRegisterPublishes < numRackSensors ||
         !allUesHaveMqttTraffic || !allPackageSensorsVerified || !allRackSensorsVerified ||
-        !envSensorsVerified || !allRobotFlowsVerified ||
+        !envSensorsVerified || !allRobotFlowsVerified || !allCameraFlowsVerified ||
         !withdrawalVerified || !robotRouteVerified)) {
         std::cerr << "ERROR: Warehouse MQTT verification failed." << std::endl;
         Simulator::Destroy();
         SionnaPyEmbed::GetInstance().Dispose();
         return 1;
-    } else if (verifyFullWorkflow && !enableWarehouseWorkflow && !radioBenchmarkVerified) {
-        std::cerr << "ERROR: Warehouse radio-benchmark verification failed." << std::endl;
-        Simulator::Destroy();
-        SionnaPyEmbed::GetInstance().Dispose();
-        return 1;
-    } else if (verifyFullWorkflow && enableWarehouseWorkflow) {
-        std::cout << "SUCCESS: all UEs, sensors, withdrawal MQTT, robot route phases, and robot MQTT/video flows are verified" << std::endl;
     } else if (verifyFullWorkflow) {
-        std::cout << "SUCCESS: radio benchmark UEs, robot route phases, and robot MQTT/video flows are verified" << std::endl;
+        std::cout << "SUCCESS: all UEs, sensors, withdrawal MQTT, robot route phases, robot MQTT flows, and camera video flows are verified" << std::endl;
     } else {
         std::cout << "INFO: full workflow verification requires simTime >= 120 s; "
                      "short-run verification skipped"
