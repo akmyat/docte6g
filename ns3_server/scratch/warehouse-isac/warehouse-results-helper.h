@@ -112,6 +112,7 @@ struct SummaryConfig
     double ueNoiseFigureDb{0.0};
     Vector gnbPosition;
     Vector gnbLookAt;
+    std::string geometryProfile;
     std::string tddPattern;
     double ueSpeedMps{0.0};
     double rxUpdateIntervalSec{0.0};
@@ -122,18 +123,11 @@ struct SummaryConfig
     std::vector<Vector> robotStartPositions;
     std::vector<Vector> videoClientPositions;
     std::vector<uint16_t> robotVideoPorts;
-    bool enableChallengeTraffic{false};
-    bool enableChallengeUl{true};
-    bool enableWarehouseWorkflow{true};
+    uint32_t cameraFrameSizeBytes{0};
+    uint32_t cameraFps{0};
     bool fixedMcsUl{true};
     uint32_t startingMcsUl{0};
     double beamformingPeriodicitySec{1.0};
-    double challengeStartSec{0.0};
-    double robotRouteStartSec{0.0};
-    double robotDropStartSec{0.0};
-    uint32_t challengePacketIntervalUs{0};
-    uint32_t challengeUlPacketIntervalUs{0};
-    uint32_t challengePacketSizeBytes{0};
     uint32_t mobileRobotUeStartIndex{0};
     uint32_t detectionCount{0};
     double isacSensingPowerW{0.0};
@@ -691,7 +685,7 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "scheduler_ul_ctrl_symbols: 2\n";
     file << "scheduler_fixed_mcs_ul: " << config.fixedMcsUl << "\n";
     file << "scheduler_starting_mcs_ul: " << config.startingMcsUl << "\n";
-    file << "beamforming_method: ns3::DirectPathBeamforming\n";
+    file << "beamforming_method: ns3::CellScanBeamforming\n";
     file << "beamforming_periodicity_s: " << config.beamformingPeriodicitySec << "\n";
     file << "tdd_pattern: " << config.tddPattern << "\n";
     file << "rlc_um_max_tx_buffer_size: 999999999\n\n";
@@ -709,7 +703,10 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "ue_speed_mps: " << config.ueSpeedMps << "\n";
     file << "rx_update_interval_s: " << config.rxUpdateIntervalSec << "\n";
     file << "rx_object_z_offset_m: " << config.rxObjectZOffset << "\n";
-    file << "warehouse_bounds: [-24, 24] x [-19, 19] x [0, 2]\n";
+    if (config.geometryProfile == "large")
+        file << "warehouse_bounds: [-50, 50] x [-35, 35] x [0, 2]\n";
+    else
+        file << "warehouse_bounds: [-24, 24] x [-19, 19] x [0, 2]\n";
     WritePositionList(file, "package_sensor_arm_positions", config.packageSensorPositions);
     WritePositionList(file, "rack_sensor_positions", config.rackSensorPositions);
     WritePositionList(file, "mobile_robot_start_positions", config.robotStartPositions);
@@ -723,31 +720,17 @@ ExportSummary(const std::string& path, const SummaryConfig& config)
     file << "controller_client_id: controller1\n";
     file << "withdrawal_client_id: withdrawal1\n";
     file << "withdrawal_check_interval_ms: 5000\n";
-    file << "withdrawal_probability: 1\n";
-    file << "warehouse_workflow_enabled: " << config.enableWarehouseWorkflow << "\n";
     file << "temperature_sensor_client_id: racktempsensor\n";
     file << "humidity_sensor_client_id: rackhumiditysensor\n";
     file << "environment_sensor_publish_interval_ms: 5000\n";
     file << "package_sensor_check_interval_ms: 5000\n";
-    file << "package_sensor_generation_probability: 1\n";
+    file << "package_sensor_mode: deterministic\n";
     file << "rack_sensor_names: rack1, rack2, rack3\n";
     file << "robot_names: robot1, robot2, robot3\n";
     file << "robot_camera_names: camera1, camera2, camera3\n";
     file << "video_client_names: videoclient1, videoclient2, videoclient3\n";
-    file << "robot_camera_frame_size_bytes: 300\n";
-    file << "robot_camera_fps: 2\n";
-    file << "radio_challenge_traffic_enabled: " << config.enableChallengeTraffic << "\n";
-    file << "radio_challenge_uplink_enabled: " << config.enableChallengeUl << "\n";
-    file << "radio_challenge_start_s: " << config.challengeStartSec << "\n";
-    file << "robot_route_start_s: " << config.robotRouteStartSec << "\n";
-    file << "robot_drop_start_s: " << config.robotDropStartSec << "\n";
-    file << "radio_challenge_packet_size_bytes: " << config.challengePacketSizeBytes << "\n";
-    file << "radio_challenge_dl_packet_interval_us: " << config.challengePacketIntervalUs << "\n";
-    file << "radio_challenge_ul_packet_interval_us: " << config.challengeUlPacketIntervalUs << "\n";
-    file << "radio_challenge_static_dl_ports: 12000-12002\n";
-    file << "radio_challenge_robot_dl_ports: 13000-13002\n";
-    file << "radio_challenge_static_ul_ports: 14000-14002\n";
-    file << "radio_challenge_robot_ul_ports: 15000-15002\n";
+    file << "camera_frame_size_bytes: " << config.cameraFrameSizeBytes << "\n";
+    file << "camera_fps: " << config.cameraFps << "\n";
     file << "robot_video_ports:";
     for (const auto port : config.robotVideoPorts)
     {

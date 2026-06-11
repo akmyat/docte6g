@@ -88,7 +88,7 @@ WarehouseRackSensorApp::Register() {
         std::string payload = ss.str();
         
         NS_LOG_INFO(m_sensorName << " registering with payload: " << payload);
-        m_mqttClient->sendPUBLISHpacket("warehouse/register", payload, 1, false, false);
+        m_mqttClient->sendPUBLISHpacket("warehouse/register", payload, 0, false, false);
     } else {
         NS_LOG_DEBUG(m_sensorName << " MQTT client not connected during Register() call");
     }
@@ -125,7 +125,7 @@ WarehouseRackSensorApp::PublishCapacity() {
         std::string payload = ss.str();
         std::string outTopic = "warehouse/rack/" + m_sensorName + "/capacity";
         NS_LOG_INFO(m_sensorName << " publishing capacity: " << payload);
-        m_mqttClient->sendPUBLISHpacket(outTopic, payload, 1, false, false);
+        m_mqttClient->sendPUBLISHpacket(outTopic, payload, 0, false, false);
     }
 }
 

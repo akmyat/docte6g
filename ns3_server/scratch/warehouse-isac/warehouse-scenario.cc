@@ -106,8 +106,13 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     double isacSensingFrameIntervalSec = 0.5;
     double isacBeamwidthDeg = 20.0;
     uint32_t isacSamplesPerSrc = 2000000;
+    double isacMinPower = 1e-25;
     uint32_t showcaseBytes = 512000;    // 500 KB payload per mission dispatch
     uint64_t pacingRateBps = 50000000;  // 50 Mbps: stresses 2x2 link, fits inside 8x8 capacity
+    // DirectPathBeamforming uses geometry (UE position) to steer the beam.  CellScanBeamforming
+    // scans the DFT codebook via the Sionna MIMO channel but can lock onto strong reflected paths
+    // (e.g. south-wall reflections) that become nulls for north-side UEs in narrow 8x8 arrays.
+    std::string beamformingMethod = "ns3::DirectPathBeamforming";
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("simTime", "Simulation time (s)", simTimeSec);
@@ -123,12 +128,14 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     cmd.AddValue("ueTxPowerDbm", "UE transmit power (dBm)", ueTxPowerDbm);
     cmd.AddValue("gnbNoiseFigureDb", "gNB receiver noise figure (dB)", gnbNoiseFigureDb);
     cmd.AddValue("ueNoiseFigureDb", "UE receiver noise figure (dB)", ueNoiseFigureDb);
+    cmd.AddValue("beamformingMethod", "Beamforming algorithm TypeId (e.g. ns3::DirectPathBeamforming or ns3::CellScanBeamforming)", beamformingMethod);
     cmd.AddValue("beamformingPeriodicity", "Communication beamforming update interval (s)", beamformingPeriodicitySec);
     cmd.AddValue("showcaseBytes", "UDP DL payload bytes per mission to robots (showcases array throughput)", showcaseBytes);
     cmd.AddValue("pacingRateBps", "Showcase payload pacing rate (bps); must exceed per-UE capacity of smallest array to stress it", pacingRateBps);
     cmd.AddValue("isacSensingFrameInterval", "Interval between ISAC sensing frames (s)", isacSensingFrameIntervalSec);
     cmd.AddValue("isacBeamwidthDeg", "Sensing-assisted communication beam Gaussian width in degrees", isacBeamwidthDeg);
     cmd.AddValue("isacSamplesPerSrc", "Sionna rays per source for each ISAC sensing frame", isacSamplesPerSrc);
+    cmd.AddValue("isacMinPower", "ISAC detection minimum path power threshold (W); lower detects weaker echoes", isacMinPower);
     cmd.Parse(argc, argv);
 
     RngSeedManager::SetSeed(42);
@@ -142,7 +149,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     const bool isLargeProfile = geometryProfile == "large";
     const std::string sceneXml =
         (assets / "scenes" / "warehouse" /
-         (isLargeProfile ? "warehouse_large_v1.xml" : "warehouse_v4.xml")).string();
+         (isLargeProfile ? "warehouse_v5.xml" : "warehouse_v4.xml")).string();
     const std::string sceneCollisionObj =
         (assets / "scenes" / "warehouse" /
          (isLargeProfile ? "warehouse_large_v1.obj" : "warehouse_v4.obj")).string();
@@ -180,43 +187,56 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     const bool diagonalNlos = geometryProfile == "diagonal-nlos";
 
     // -----------------------------------------------------------------------
-    // "large" profile — 100 m × 70 m warehouse, gNB in SW corner.
+    // "large" profile — warehouse_v5.xml  (200 m × 100 m)
     //
-    // Scene file: warehouse_large_v1.xml (Mitsuba3 box primitives).
-    // Bounds: x=[−50,50]  y=[−35,35]  z=[0,7]
-    // gNB at (−48, −33, 6) looking at (0, 0, 1.5).
+    // Scene: warehouse_v5.xml
+    //   Floor:  x=[−100,100]  y=[−50,50]   z=0       (concrete)
+    //   Walls:  x=[−100,100]  y=[−50,50]   z=[0,10]  (concrete)
+    //   5 shelf rows running E-W (168 m long × 2 m wide × 3 m tall, itu_metal):
+    //     shelves1: y≈-45   shelves2: y≈-25   shelves3: y≈-5
+    //     shelves4: y≈+15   shelves5: y≈+35
+    //   4 aisles (18 m wide, running N-S):
+    //     A1: y=-44..-26 (centre -35)    A2: y=-24..-6  (centre -15)
+    //     A3: y= -4..+14 (centre  +5)    A4: y=+16..+34 (centre +25)
+    //   Conveyors + robot arms at west end (x≈-97): y≈-35, -15, +25
+    //   Tables at east end (x≈+95): 5 workstations
     //
-    // Rack rows (metal, 2 m wide, 4.5 m tall, running N–S y=−24..+30):
-    //   Row 1: x=−33..−31   Row 2: x=−19..−17   Row 3: x=−5..−3
-    //   Row 4: x=+9..+11    Row 5: x=+23..+25    Row 6: x=+37..+39
-    //
-    // Aisle centres: −41, −25, −11, +3, +17, +31
-    // Sensor distances from gNB: ~58 m (aisle 1) → ~98 m (aisle 6)
+    // gNB: x=+87, inside main warehouse, 2m west of dividing wall at x=89.9.
+    // East alcove (tables) is x=[90.1,99.9] — blocked from main floor.
+    // gNB points west; rack sensors at x=-70 are 157m away.
+    // Signal path rack crossings (gNB at x=87, sensors at west x=-70):
+    //   S1 (A1, x=-70, y=-35): crosses shelves3 + shelves2  → 2 rows
+    //   S2 (A2, x=-70, y=-15): crosses shelves3             → 1 row
+    //   S3 (A3, x=-70, y= +5): stays in A3 aisle            → 0 rows (control)
+    //   S4 (A4, x=-70, y=+25): crosses shelves4             → 1 row
+    // Robots/conveyors/drop-zone at west end (x≈-94) are in the main beam.
     // -----------------------------------------------------------------------
     const Vector gnbPos =
-        isLargeProfile  ? Vector(-48.0, -33.0, 6.0) :
+        isLargeProfile  ? Vector( 87.0,   0.0, 8.0) :
         diagonalNlos    ? Vector(-15.0, -15.0, 6.0) :
                           Vector( 10.0, -18.5, 6.0);
     const Vector gnbLookAt =
-        isLargeProfile  ? Vector(  0.0,   0.0, 1.5) :
+        isLargeProfile  ? Vector(-90.0,   0.0, 1.5) :
         diagonalNlos    ? Vector( 10.0,   4.0, 1.5) :
                           Vector( 10.0,  16.0, 1.5);
 
-    // Package sensors — wired, at south staging-area conveyor
+    // Package sensors — placed just east of conveyor mesh edges (x≈-96).
+    // x=-94 is clear of conveyor and robot arm meshes while logically "at" the conveyor.
     const std::vector<Vector> packageSensorArmPositions =
         isLargeProfile
-            ? std::vector<Vector>{Vector(-6.0, -30.0, 1.2),
-                                  Vector( 6.0, -30.0, 1.2)}
+            ? std::vector<Vector>{Vector(-94.0, -35.0, 1.2),  // pkg sensor 1: conveyor_belt1 (A1)
+                                  Vector(-94.0, -15.0, 1.2)}  // pkg sensor 2: conveyor_belt2 (A2)
             : std::vector<Vector>{Vector(19.0, -15.5, 1.2),
                                   Vector( 9.0, -15.5, 1.2)};
 
-    // Rack sensors — 3 sensors at reachable aisles (sensors 4-6 were in Sionna blackout).
-    // Sensor 1 (aisle 1, LOS ~86 dB), sensor 2 (aisle 2, reflection ~73 dB),
-    // sensor 3 (aisle 3, 1-bounce NLOS ~101 dB) — graduated SNR gradient.
+    // Rack sensors — 4 sensors at west end, one per aisle, in main beam of east-wall gNB.
+    // SNR gradient: S3 (0 rows) → S2/S4 (1 row) → S1 (2 rows).
     const std::vector<Vector> rackSensorPositions =
         isLargeProfile
-            ? std::vector<Vector>{Vector(-41.0, 24.0, 1.5),   // aisle 1 ~86 dB
-                                  Vector(-25.0, 24.0, 1.5)}   // aisle 2 ~73 dB (rack3 at ~101 dB is outside Sionna depth=3 coverage)
+            ? std::vector<Vector>{Vector(-70.0, -35.0, 1.5),  // S1 A1: 2 rows crossed
+                                  Vector(-70.0, -15.0, 1.5),  // S2 A2: 1 row crossed
+                                  Vector(-70.0,   5.0, 1.5),  // S3 A3: 0 rows (control)
+                                  Vector(-70.0,  25.0, 1.5)}  // S4 A4: 1 row crossed
             : diagonalNlos
                 ? std::vector<Vector>{Vector(-1.8, -2.0, 1.5),
                                       Vector(7.8, -2.0, 1.5),
@@ -227,13 +247,13 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
                                       Vector(-1.8, 5.0, 1.5),
                                       Vector(21.0, 5.0, 1.5)};
 
-    // Mobile robots — 3 robots, one per working rack sensor.
-    // Spread across the south staging area so each traverses a different aisle depth.
+    // Mobile robots — start just east of conveyor meshes (x=-94, conveyors end at x≈-96).
+    // x=-97 would be inside the conveyor_belt1/2/3 mesh volumes; x=-94 is clear.
     const std::vector<Vector> mobileRobotPositions =
         isLargeProfile
-            ? std::vector<Vector>{Vector(-44.0, -30.0, 1.5),   // robot1 → aisle 1
-                                  Vector(-28.0, -28.0, 1.5),   // robot2 → aisle 2
-                                  Vector(-12.0, -28.0, 1.5)}   // robot3 → aisle 3
+            ? std::vector<Vector>{Vector(-94.0, -35.0, 1.5),  // robot1 → A1 (serves S1)
+                                  Vector(-94.0, -15.0, 1.5),  // robot2 → A2 (serves S2)
+                                  Vector(-94.0,  35.0, 1.5)}  // robot3 → A4 (serves S4); y=35 puts it at -10.9° off gNB broadside, inside 8x8 k=-1 beam [-20.8°,-8.2°]
             : diagonalNlos
                 ? std::vector<Vector>{Vector(-2.0, 0.0, 1.5),
                                       Vector(16.0, 0.0, 1.5),
@@ -242,16 +262,15 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
                                       Vector(10.0, -9.5, 1.5),
                                       Vector(10.0, -7.0, 1.5)};
 
-    // Wired video client
+    // Video client — west-end area (gNB is east, main beam covers west)
     const std::vector<Vector> videoClientTablePositions =
         isLargeProfile
-            ? std::vector<Vector>{Vector(48.0, 32.0, 1.5)}
+            ? std::vector<Vector>{Vector(-90.0, 40.0, 1.5)}
             : std::vector<Vector>{Vector(-22.0, 4.0, 1.5)};
 
-    // Fixed camera UE (NR UL video stream)
-    // Large profile: place in staging area near gNB for stable LOS reference.
+    // Fixed camera UE (NR UL video stream) — elevated in central aisle (A3), mid-warehouse
     const std::vector<Vector> cameraPositions =
-        isLargeProfile  ? std::vector<Vector>{Vector(-40.0, -20.0, 4.0)}
+        isLargeProfile  ? std::vector<Vector>{Vector(  0.0,   5.0, 4.0)}
         : diagonalNlos  ? std::vector<Vector>{Vector( 20.0,  12.0, 4.0)}
                         : std::vector<Vector>{Vector( 10.0,  -8.0, 4.0)};
     std::vector<Vector> ueStartPositions = rackSensorPositions;
@@ -356,7 +375,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
 
         // Set bounds for the warehouse
         const Box mobilityBounds = isLargeProfile
-            ? Box(-50.0, 50.0, -35.0, 35.0, 0.0, 2.0)
+            ? Box(-100.0, 100.0, -50.0, 50.0, 0.0, 2.0)
             : Box(-24.0, 24.0, -19.0, 19.0, 0.0, 2.0);
         mm->SetAttribute("Bounds", BoxValue(mobilityBounds));
         mm->SetPosition(ueStartPositions[i]);
@@ -398,7 +417,10 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     sionnaSettings.enable_situation_awareness = isacEnabled;
     if (isacEnabled) {
         sionnaSettings.rx_type_path = rxMesh;
-        sionnaSettings.isac_min_power = 1e-25;
+        sionnaSettings.isac_min_power = isacMinPower;
+        sionnaSettings.isac_detection_roi_margin = 110.0;  // iw_hub.ply is ~0.7m; +110m covers full 200m warehouse
+        sionnaSettings.isac_z_min = 0.5;  // robot antenna at 1.5m; capture echoes in [0.5, 2.5]
+        sionnaSettings.isac_z_max = 2.5;
         sionnaSettings.isac_eps_cluster = 1.5;
         sionnaSettings.isac_mti_dist_thresh = 0.4;
         sionnaSettings.isac_min_displacement = 0.3;
@@ -423,6 +445,10 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     // -----------------------------------------------------------------------
     Ptr<SionnaPropagationCache> propCache = CreateObject<SionnaPropagationCache>();
     propCache->SetAttribute("TxNumCols", UintegerValue(gnbAntennaCols));
+    // Enforce a minimum coherence distance of 20 m so 8x8 narrow-beam channels
+    // (coherence formula gives ~8 m) do not expire every 4 s for a 2 m/s robot,
+    // causing repeated Friis-fallback episodes that drop the link.
+    propCache->SetAttribute("MinDelta", DoubleValue(20.0));
     propCache->SetAttribute("EnableWeakLinkFastPath", BooleanValue(false));
     propCache->SetAttribute("EnableFriisFallback", BooleanValue(true));  // fallback to Friis until Sionna computes channel at 100 MHz
     propCache->SetAttribute("EnableMimoCsi", BooleanValue(useElementMimoCsi));
@@ -459,11 +485,7 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
     // -----------------------------------------------------------------------
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
     Ptr<IdealBeamformingHelper> bfHelper = CreateObject<IdealBeamformingHelper>();
-    // CellScanBeamforming sweeps all codebook beams using the actual Sionna multipath channel,
-    // selecting the beam that maximises received power.  This handles NLOS robots inside the
-    // metal rack aisles correctly, where DirectPathBeamforming steers into the blocked direct
-    // path and creates a deep null.
-    bfHelper->SetAttribute("BeamformingMethod", StringValue("ns3::CellScanBeamforming"));
+    bfHelper->SetAttribute("BeamformingMethod", StringValue(beamformingMethod));
     bfHelper->SetAttribute("BeamformingPeriodicity", TimeValue(Seconds(beamformingPeriodicitySec)));
 
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
@@ -879,8 +901,8 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
         robotMqttClients.push_back(robotMqttClient);
 
         const Vector dropZone = isLargeProfile
-            ? Vector(30.0, -30.0, 1.5)   // south staging area, east end
-            : Vector(13.0, -11.0, 0.2);  // original east-side conveyor drop
+            ? Vector(-94.0, 25.0, 1.5)  // near conveyor_belt3, east of mesh (conveyor ends x≈-96)
+            : Vector(13.0, -11.0, 0.2); // original east-side conveyor drop
         Ptr<WarehouseRobotApp> robotApp = CreateObject<WarehouseRobotApp>();
         robotApp->SetAttribute("SensorName", StringValue(robotName));
         robotApp->SetAttribute("Speed", DoubleValue(ueSpeed));
@@ -1010,17 +1032,18 @@ RunWarehouseScenario(bool isacEnabled, int argc, char* argv[])
                                            isacEnabled,
                                            isacSensingPowerW);
     std::ofstream sensingFile(outputDir + "/sensing_stats.csv");
-    sensingFile << "ISACEnabled,DetectionIndex,Time_s,TrackId,X,Y,Z\n";
+    sensingFile << "ISACEnabled,DetectionIndex,Time_s,TrackId,X,Y,Z,Power_W\n";
     const std::vector<SionnaDetectionRecord> detections =
         isacSteerer ? isacSteerer->GetAccumulatedDetections()
                     : std::vector<SionnaDetectionRecord>{};
     if (detections.empty()) {
-        sensingFile << (isacEnabled ? "1" : "0") << ",,,,,,\n";
+        sensingFile << (isacEnabled ? "1" : "0") << ",,,,,,,\n";
     }
     for (uint32_t i = 0; i < detections.size(); ++i) {
         const auto& detection = detections[i];
         sensingFile << "1," << i << "," << detection.time << "," << detection.track_id
-                    << "," << detection.x << "," << detection.y << "," << detection.z << "\n";
+                    << "," << detection.x << "," << detection.y << "," << detection.z
+                    << "," << detection.power_w << "\n";
     }
     sensingFile.close();
 

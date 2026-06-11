@@ -1,0 +1,79 @@
+ninja: no work to do.
+/home/aung/anaconda3/envs/6G/lib/python3.12/site-packages/torch/cuda/__init__.py:435: UserWarning: 
+    Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
+    Minimum and Maximum cuda capability supported by this version of PyTorch is
+    (8.0) - (12.0)
+    
+  queued_call()
+pybullet build time: Jan  6 2026 23:44:17
+=== Warehouse No-ISAC Simulation ===
+Scene:       /home/aung/code/docte6g/assets/scenes/warehouse/warehouse_v4.xml
+Frequency:   15 GHz
+ISAC:        DISABLED
+Sim time:    60 s
+Starting simulation...
+
+=== Simulation Complete ===
+Total flows:  34
+Total TxPkts: 24010
+Total RxPkts: 136
+MQTT TxPkts:  178
+MQTT RxPkts:  104
+MQTT Tput:    33.06 Kbps
+Temp publishes: 0, controller temp receives: 0
+Humidity publishes: 0, controller humidity receives: 0
+Package publishes: 2, controller package receives: 2
+Rack registers: 0
+Withdrawal queries: 0, package lists: 0, withdrawal requests: 0
+Robot route completions: package pickup=0, rack store=0, rack retrieve=0, pickup-zone drop=0
+UE1 MQTT RxPkts: 0 Tput: 0.00 Kbps
+UE2 MQTT RxPkts: 0 Tput: 0.00 Kbps
+UE3 MQTT RxPkts: 0 Tput: 0.00 Kbps
+UE4 MQTT RxPkts: 0 Tput: 0.00 Kbps
+UE5 MQTT RxPkts: 15 Tput: 2.55 Kbps
+UE6 MQTT RxPkts: 0 Tput: 0.00 Kbps
+UE7 MQTT RxPkts: 0 Tput: 0.00 Kbps
+UE8 MQTT RxPkts: 0 Tput: 0.00 Kbps
+robot1 MQTT RxPkts: 15 Tput: 2.55 Kbps
+robot2 MQTT RxPkts: 0 Tput: 0.00 Kbps
+robot3 MQTT RxPkts: 0 Tput: 0.00 Kbps
+camera1 Video RxPkts: 0 Tput: 0.00 Kbps
+INFO: full workflow verification requires simTime >= 120 s; short-run verification skipped
+
+--- Per-Flow Summary ---
+Flow 1 [13.0.0.5:2123 -> 13.0.0.6:2123] Proto=UDP Tx=8 Rx=8 Tput=9633458.65 Kbps
+Flow 2 [14.0.0.6:2123 -> 14.0.0.5:2123] Proto=UDP Tx=8 Rx=8 Tput=9633458.65 Kbps
+Flow 3 [14.0.0.5:2123 -> 14.0.0.6:2123] Proto=UDP Tx=8 Rx=8 Tput=8698760.72 Kbps
+Flow 4 [13.0.0.6:2123 -> 13.0.0.5:2123] Proto=UDP Tx=8 Rx=8 Tput=8698760.72 Kbps
+Flow 5 [7.0.0.1:49153 -> 7.0.0.1:1883] Proto=TCP Tx=14 Rx=14 Tput=0.22 Kbps
+Flow 6 [7.0.0.1:1883 -> 7.0.0.1:49153] Proto=TCP Tx=18 Rx=18 Tput=0.43 Kbps
+Flow 7 [22.0.1.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=6 Rx=6 Tput=7.33 Kbps
+Flow 8 [7.0.0.1:1883 -> 22.0.1.2:49153] Proto=TCP Tx=4 Rx=4 Tput=8.59 Kbps
+Flow 9 [7.0.0.1:49154 -> 7.0.0.1:1883] Proto=TCP Tx=6 Rx=6 Tput=5.80 Kbps
+Flow 10 [7.0.0.1:1883 -> 7.0.0.1:49154] Proto=TCP Tx=4 Rx=4 Tput=5.76 Kbps
+Flow 11 [7.0.0.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 12 [7.0.0.2:49154 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 13 [7.0.0.3:49153 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 14 [21.0.1.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=8 Rx=8 Tput=0.79 Kbps
+Flow 15 [7.0.0.1:1883 -> 21.0.1.2:49153] Proto=TCP Tx=5 Rx=5 Tput=0.29 Kbps
+Flow 16 [7.0.0.3:49154 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 17 [7.0.0.4:49153 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 18 [7.0.0.4:49154 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 19 [7.0.0.5:49153 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 20 [21.0.2.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=8 Rx=8 Tput=0.79 Kbps
+Flow 21 [7.0.0.1:1883 -> 21.0.2.2:49153] Proto=TCP Tx=5 Rx=5 Tput=0.29 Kbps
+Flow 22 [7.0.0.5:49154 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 23 [20.0.1.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=6 Rx=6 Tput=0.15 Kbps
+Flow 24 [7.0.0.1:1883 -> 20.0.1.2:49153] Proto=TCP Tx=5 Rx=5 Tput=0.07 Kbps
+Flow 25 [7.0.0.2:49155 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 26 [7.0.0.9:49153 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 27 [7.0.0.3:49155 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 28 [7.0.0.9:49153 -> 20.0.1.2:10000] Proto=UDP Tx=23800 Rx=0 Tput=0.00 Kbps
+Flow 29 [7.0.0.4:49155 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 30 [7.0.0.5:49155 -> 7.0.0.1:1883] Proto=TCP Tx=5 Rx=0 Tput=0.00 Kbps
+Flow 31 [7.0.0.6:49153 -> 7.0.0.1:1883] Proto=TCP Tx=9 Rx=9 Tput=1.78 Kbps
+Flow 32 [7.0.0.1:1883 -> 7.0.0.6:49153] Proto=TCP Tx=7 Rx=6 Tput=0.77 Kbps
+Flow 33 [7.0.0.7:49153 -> 7.0.0.1:1883] Proto=TCP Tx=4 Rx=0 Tput=0.00 Kbps
+Flow 34 [7.0.0.8:49153 -> 7.0.0.1:1883] Proto=TCP Tx=4 Rx=0 Tput=0.00 Kbps
+
+Results written to: /home/aung/code/docte6g/results/warehouse-diagonal-smoke/no-isac-2x2

@@ -87,6 +87,9 @@ struct SionnaInitSettings {
     int    isac_tracker_min_age   = 2;
     int    isac_mti_warmup_frames = 0;
     double isac_rx_scattering_coefficient = 0.5;
+    double isac_detection_roi_margin = 5.0;  // added to rx_mesh bbox for ERP filtering
+    double isac_z_min = -1.0;  // <0 means use calibrated default
+    double isac_z_max = -1.0;  // <0 means use calibrated default
     std::string rx_type_path;   // ISAC radar mesh (.ply)
 };
 
@@ -94,6 +97,7 @@ struct SionnaDetectionRecord {
     double time;
     int    track_id;
     double x, y, z;
+    double power_w = 0.0;
 };
 
 struct SionnaBeamRecord {

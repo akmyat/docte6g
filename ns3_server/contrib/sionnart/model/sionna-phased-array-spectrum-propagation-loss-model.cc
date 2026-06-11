@@ -431,6 +431,46 @@ SionnaPhasedArraySpectrumPropagationLossModel::DoCalcRxPowerSpectralDensity(
 
     if (m_propagationCache)
     {
+        // Fast path: the beamforming algorithm (e.g. CellScanBeamforming) already set
+        // rxParams->precodingMatrix.  Check the effective-gain cache directly without
+        // building the full channel matrix.  On a cache hit (≥99.98 % of calls) this
+        // avoids 17.5 M heap allocations and O(RBs × ports) complex fills per run.
+        if (rxParams->precodingMatrix)
+        {
+            const std::vector<double>* effectiveGains =
+                m_propagationCache->GetEffectiveChannelGain(a,
+                                                            b,
+                                                            aPhasedArrayModel,
+                                                            bPhasedArrayModel,
+                                                            rxParams->precodingMatrix,
+                                                            rxParams->psd->GetValuesN());
+            if (effectiveGains)
+            {
+                double inputPsdSum = 0.0;
+                double outputPsdSum = 0.0;
+                const auto psdStart = std::chrono::steady_clock::now();
+                ApplyCachedEffectiveGains(rxParams->psd, effectiveGains, inputPsdSum, outputPsdSum);
+                m_perfStats.psdUpdateSeconds += ElapsedSeconds(psdStart);
+                ++m_perfStats.effectiveGainFastPathCalls;
+                if (params->txPhy &&
+                    inputPsdSum > 0.0 &&
+                    outputPsdSum > 0.0 &&
+                    std::isfinite(outputPsdSum))
+                {
+                    RecordChannelGain(aId,
+                                      bId,
+                                      outputPsdSum / inputPsdSum,
+                                      aPhasedArrayModel->GetNumPorts(),
+                                      bPhasedArrayModel->GetNumPorts(),
+                                      rxParams->psd->GetValuesN());
+                }
+                m_perfStats.doCalcRxPsdSeconds += ElapsedSeconds(calcStart);
+                return rxParams;
+            }
+        }
+
+        // Slow path: effective-gain cache miss (first call per beam period) or no
+        // precoding matrix set — build the channel matrix and compute gains from scratch.
         Ptr<const ComplexMatrixArray> channelMatrix =
             m_propagationCache->GetSpectrumChannelMatrix(a,
                                                          b,

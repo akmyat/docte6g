@@ -11,6 +11,8 @@ namespace ns3 {
 
 class WarehouseWithdrawalApp : public Application {
     public:
+        enum Mode { PROBABILISTIC = 0, DETERMINISTIC = 1 };
+
         static TypeId GetTypeId();
         WarehouseWithdrawalApp();
         virtual ~WarehouseWithdrawalApp();
@@ -35,10 +37,12 @@ class WarehouseWithdrawalApp : public Application {
         void RequestPackageList();
 
         Ptr<MqttClientApp> m_mqttClient;
-        uint32_t m_checkInterval; // in ms
-        double m_withdrawalProbability;
+        uint32_t m_checkInterval;        // ms — poll cadence (both modes)
+        double   m_withdrawalProbability; // PROBABILISTIC only
+        Mode     m_mode;
+        double   m_withdrawalDelaySec;   // DETERMINISTIC: seconds from app start before first query
         Ptr<UniformRandomVariable> m_rv;
-        EventId m_checkEvent;
+        EventId  m_checkEvent;
 };
 
 } // namespace ns3

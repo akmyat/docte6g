@@ -9,6 +9,8 @@ namespace ns3 {
 
 class WarehousePackageSensorApp : public Application {
     public:
+        enum Mode { PROBABILISTIC = 0, DETERMINISTIC = 1 };
+
         static TypeId GetTypeId();
         WarehousePackageSensorApp();
         virtual ~WarehousePackageSensorApp();
@@ -18,22 +20,26 @@ class WarehousePackageSensorApp : public Application {
     protected:
         virtual void StartApplication() override;
         virtual void StopApplication() override;
-    
+
     private:
         void OnMqttConnected(Ptr<const Packet> packet, uint8_t returnCode, bool sessionPresent);
         void CheckGeneratePackage();
         void Register();
-    
-    Ptr<MqttClientApp> m_mqttClient;
-    uint32_t m_checkInterval; // ms
-    double m_generationProbability;
-    std::string m_sensorName;
-    uint32_t m_packageIdCounter;
+        void GeneratePackage();
 
-    Ptr<UniformRandomVariable> m_probRv;
-    Ptr<UniformRandomVariable> m_dimRv;
-    Ptr<UniformRandomVariable> m_weightRv;
-    EventId m_generateEvent;
+        Ptr<MqttClientApp> m_mqttClient;
+        uint32_t m_checkInterval;        // ms — poll cadence (both modes)
+        double   m_generationProbability; // PROBABILISTIC only
+        Mode     m_mode;
+        uint32_t m_numPackages;          // DETERMINISTIC: packages to emit (0 = unlimited)
+        std::string m_sensorName;
+        uint32_t m_packageIdCounter;
+        uint32_t m_packagesGenerated;    // DETERMINISTIC: packages emitted so far
+
+        Ptr<UniformRandomVariable> m_probRv;
+        Ptr<UniformRandomVariable> m_dimRv;
+        Ptr<UniformRandomVariable> m_weightRv;
+        EventId m_generateEvent;
 };
 
 } // namespace ns3

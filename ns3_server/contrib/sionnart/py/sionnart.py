@@ -178,7 +178,9 @@ def _extract_erps(paths_obj, gnb_pos, min_power=1e-25,
         tau = np.array(paths_obj.tau)
         theta_r = np.array(paths_obj.theta_r)
         phi_r = np.array(paths_obj.phi_r)
-        powers = np.mean(np.abs(a) ** 2, axis=tuple(range(a.ndim - 1)))
+        # Sum over all antenna-element pairs so power scales as N_tx_ant × N_rx_ant
+        # (coherent MIMO radar gain), not mean-per-element which is array-size-invariant.
+        powers = np.sum(np.abs(a) ** 2, axis=tuple(range(a.ndim - 1)))
         tau = np.mean(tau, axis=tuple(range(tau.ndim - 1)))
         theta_r = np.mean(theta_r, axis=tuple(range(theta_r.ndim - 1)))
         phi_r = np.mean(phi_r, axis=tuple(range(phi_r.ndim - 1)))
@@ -1419,7 +1421,7 @@ class SionnaRT:
                     tau     = np.array(paths.tau)
                     theta_r = np.array(paths.theta_r)
                     phi_r   = np.array(paths.phi_r)
-                    powers  = np.mean(np.abs(a)**2,    axis=tuple(range(a.ndim-1)))
+                    powers  = np.sum(np.abs(a)**2,    axis=tuple(range(a.ndim-1)))
                     tau_1d  = np.mean(tau,             axis=tuple(range(tau.ndim-1)))
                     th_1d   = np.mean(theta_r,         axis=tuple(range(theta_r.ndim-1)))
                     ph_1d   = np.mean(phi_r,           axis=tuple(range(phi_r.ndim-1)))
@@ -1663,11 +1665,18 @@ class SionnaRT:
                 if not tracks:
                     tracks = self._motion_track_fallback()
 
-                # Log detection history
+                # Log detection history. Powers come from raw_detections (pre-Kalman) because
+                # the Kalman tracker returns positions only, breaking direct track↔power mapping.
+                # We store one power per confirmed track using the highest-power raw cluster, which
+                # is the physically meaningful quantity for array-gain comparison across array sizes.
+                raw_powers = [float(r.get("power", 0.0)) for r in raw_detections if r.get("power", 0.0) > 0]
+                # Assign best available power to each confirmed track (sorted by power already)
+                track_powers = raw_powers[:len(tracks)] if raw_powers else [0.0] * len(tracks)
                 self.detection_history.append({
                     "time": float(_current_time),
                     "positions": [pos.tolist() if hasattr(pos, "tolist") else list(pos)
                                   for pos in tracks],
+                    "powers": track_powers,
                 })
                 self.raw_detection_history.append({
                     "time": float(_current_time),
@@ -1676,13 +1685,17 @@ class SionnaRT:
 
                 if tracks:
                     self._beam_epoch += 1
-                    self.scene.tx_array = self._build_multilobe_tx_array(tracks)
                     beam_active_this_call = True
                     self.beam_history.extend(
                         self._beam_records_for_tracks(_current_time, tracks)
                     )
-                else:
-                    self.scene.tx_array = comm_tx_array_backup
+                # Always restore the comm TX array — the ISAC multilobe array must
+                # NOT be used for communication channel computation.  Applying it
+                # bakes ISAC beam gain into the Sionna path_loss, which inflates CQI
+                # reports.  The NR scheduler then over-allocates high MCS while the
+                # actual channel (under the normal comm beam) cannot sustain it,
+                # causing packet loss and degrading delivery vs no-ISAC.
+                self.scene.tx_array = comm_tx_array_backup
                 self._perf_add("python_isac_pre_seconds", time.perf_counter() - isac_start)
             except Exception as exc:
                 import traceback
@@ -1715,18 +1728,6 @@ class SionnaRT:
             self._restore_rx_mesh_objects(rx_mesh_snapshot)
             for name in created:
                 self.remove_receiver(name)
-
-        # --- Restore comm TX array so a baseline next call sees identity state ---
-        if self.enable_SA and comm_tx_array_backup is not None and beam_active_this_call:
-            try:
-                self.scene.tx_array = comm_tx_array_backup
-            except Exception:
-                pass
-
-        # --- Cache-staleness mitigation: perturb tx_position when ISAC fired ---
-        if beam_active_this_call:
-            for r in records:
-                r["tx_position"] = self._beam_epoch_perturb(r["tx_position"])
 
         self._perf_add("python_perform_calculation_seconds", time.perf_counter() - perform_start)
         return records

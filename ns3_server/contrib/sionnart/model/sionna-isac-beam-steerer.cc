@@ -6,6 +6,7 @@
 #include "ns3/net-device.h"
 #include "ns3/simulator.h"
 #include "ns3/nstime.h"
+#include "ns3/ideal-beamforming-helper.h"
 #include <cmath>
 #include <limits>
 
@@ -33,7 +34,8 @@ SionnaIsacBeamSteerer::GetTypeId()
                 MakeDoubleAccessor(&SionnaIsacBeamSteerer::m_matchRadius),
                 MakeDoubleChecker<double>(0.0))
             .AddAttribute("EnableBeamSteering",
-                "Steer phased-array beamforming vectors toward sensed positions.",
+                "Call IdealBeamformingHelper::Run() when any mobile UE is detected, "
+                "immediately refreshing all registered gNB→UE beam pairs via BeamManager.",
                 BooleanValue(true),
                 MakeBooleanAccessor(&SionnaIsacBeamSteerer::m_enableBeamSteering),
                 MakeBooleanChecker())
@@ -58,50 +60,41 @@ SionnaIsacBeamSteerer::SionnaIsacBeamSteerer()
       m_predictionHorizon(MilliSeconds(500))
 {}
 
-SionnaIsacBeamSteerer::~SionnaIsacBeamSteerer()
+SionnaIsacBeamSteerer::~SionnaIsacBeamSteerer() { Stop(); }
+
+void SionnaIsacBeamSteerer::SetPropagationCache(Ptr<SionnaPropagationCache> cache)
+{ m_cache = cache; }
+
+void SionnaIsacBeamSteerer::SetBeamformingHelper(Ptr<IdealBeamformingHelper> bfHelper)
 {
-    Stop();
+    NS_ASSERT_MSG(bfHelper, "SetBeamformingHelper: null helper");
+    m_bfHelper = bfHelper;
 }
 
-void
-SionnaIsacBeamSteerer::SetPropagationCache(Ptr<SionnaPropagationCache> cache)
-{
-    m_cache = cache;
-}
-
-void
-SionnaIsacBeamSteerer::AddTxNode(Ptr<Node> txNode)
+void SionnaIsacBeamSteerer::AddTxNode(Ptr<Node> txNode)
 {
     NS_ASSERT_MSG(txNode, "AddTxNode: null node");
     m_txNodes.push_back(txNode);
 }
 
-void
-SionnaIsacBeamSteerer::SetTxPhasedArray(Ptr<Node> txNode, Ptr<PhasedArrayModel> array)
+void SionnaIsacBeamSteerer::SetTxPhasedArray(Ptr<Node> txNode, Ptr<PhasedArrayModel> array)
 {
-    NS_ASSERT_MSG(txNode, "SetTxPhasedArray: null node");
-    NS_ASSERT_MSG(array, "SetTxPhasedArray: null array");
+    NS_ASSERT_MSG(txNode && array, "SetTxPhasedArray: null argument");
     m_txPhasedArrays[txNode->GetId()] = array;
 }
 
-void
-SionnaIsacBeamSteerer::AddRxNode(Ptr<Node> rxNode)
+void SionnaIsacBeamSteerer::AddRxNode(Ptr<Node> rxNode)
 {
     NS_ASSERT_MSG(rxNode, "AddRxNode: null node");
     m_rxNodes.push_back(rxNode);
 }
 
-void
-SionnaIsacBeamSteerer::Start()
+void SionnaIsacBeamSteerer::Start()
 {
     m_pollEvent = Simulator::Schedule(m_pollInterval, &SionnaIsacBeamSteerer::Poll, this);
 }
 
-void
-SionnaIsacBeamSteerer::Stop()
-{
-    m_pollEvent.Cancel();
-}
+void SionnaIsacBeamSteerer::Stop() { m_pollEvent.Cancel(); }
 
 // ------------------------------------------------------------------ poll
 
@@ -109,59 +102,66 @@ void
 SionnaIsacBeamSteerer::Poll()
 {
     auto dets = SionnaPyEmbed::GetInstance().SionnaGetDetectedObjects(m_lastPollTime);
-    // Accumulate for post-simulation retrieval
     m_accumulated.insert(m_accumulated.end(), dets.begin(), dets.end());
     m_lastPollTime = Simulator::Now().GetSeconds();
 
-    NS_LOG_DEBUG("SionnaIsacBeamSteerer::Poll at t=" << m_lastPollTime
-                 << "s — " << dets.size() << " detection(s)");
+    NS_LOG_DEBUG("SionnaIsacBeamSteerer::Poll t=" << m_lastPollTime
+                 << "s  detections=" << dets.size());
+
+    bool anyMobileDetected = false;
 
     for (auto& det : dets) {
         Vector detPos(det.x, det.y, det.z);
-
         Ptr<Node> matched = FindNearest(detPos, m_matchRadius);
         if (!matched) {
-            NS_LOG_DEBUG("  detection at (" << det.x << "," << det.y << "," << det.z
-                         << ") — no RX node within " << m_matchRadius << " m, skipping");
+            NS_LOG_DEBUG("  (" << det.x << "," << det.y << "," << det.z
+                         << ") no match within " << m_matchRadius << " m");
             continue;
         }
 
-        NS_LOG_INFO("SionnaIsacBeamSteerer: detection matched node " << matched->GetId()
-                    << " at (" << det.x << "," << det.y << "," << det.z << ")");
+        NS_LOG_INFO("SionnaIsacBeamSteerer: node " << matched->GetId()
+                    << " detected at (" << det.x << "," << det.y << "," << det.z << ")");
+        anyMobileDetected = true;
 
-        // Beam steering
-        if (m_enableBeamSteering) {
+        // Update velocity track for prefetch
+        if (m_enablePrefetch && m_cache) {
+            Vector predicted = EstimateNextPos(matched->GetId(), det,
+                                               m_predictionHorizon.GetSeconds());
+            NS_LOG_DEBUG("  prefetch predicted ("
+                         << predicted.x << "," << predicted.y << "," << predicted.z << ")");
+            // m_cache->PrefetchEntry(matched, predicted);  // TODO: implement
+        } else {
+            EstimateNextPos(matched->GetId(), det, 0.0); // maintain track state
+        }
+    }
+
+    // Refresh ALL gNB→UE beams when any mobile node was detected.
+    // IdealBeamformingHelper::Run() recomputes DirectPathBeamforming for every
+    // registered pair through BeamManager — safe to call at any simulation time.
+    if (m_enableBeamSteering && anyMobileDetected) {
+        if (m_bfHelper) {
+            m_bfHelper->Run();
+            NS_LOG_INFO("SionnaIsacBeamSteerer: Run() triggered — all beams refreshed");
+        } else {
+            // Fallback: direct phased-array steering (BeamManager may override on next slot)
             for (auto& txNode : m_txNodes) {
                 Ptr<MobilityModel> txMm = txNode->GetObject<MobilityModel>();
                 if (!txMm) continue;
                 Vector txPos = txMm->GetPosition();
-
-                Angles ang(Vector(detPos.x - txPos.x,
-                                  detPos.y - txPos.y,
-                                  detPos.z - txPos.z));
-
-                Ptr<PhasedArrayModel> arr = GetPhasedArray(txNode);
-                if (arr) {
-                    auto sv = arr->GetSteeringVector(ang);
-                    arr->SetBeamformingVector(sv);
-                    NS_LOG_INFO("  steered TX node " << txNode->GetId()
-                                << " az=" << RadiansToDegrees(ang.GetAzimuth())
-                                << "° el=" << RadiansToDegrees(ang.GetInclination()) << "°");
+                for (auto& det : dets) {
+                    Vector detPos(det.x, det.y, det.z);
+                    Ptr<Node> matched = FindNearest(detPos, m_matchRadius);
+                    if (!matched) continue;
+                    Angles ang(Vector(detPos.x - txPos.x,
+                                     detPos.y - txPos.y,
+                                     detPos.z - txPos.z));
+                    Ptr<PhasedArrayModel> arr = GetPhasedArray(txNode);
+                    if (arr) {
+                        arr->SetBeamformingVector(arr->GetSteeringVector(ang));
+                        NS_LOG_INFO("  fallback steer az="
+                                    << RadiansToDegrees(ang.GetAzimuth()) << "°");
+                    }
                 }
-            }
-        }
-
-        // Cache prefetch (PrefetchEntry not yet implemented in propagation cache)
-        if (m_enablePrefetch && m_cache) {
-            Ptr<MobilityModel> rxMm = matched->GetObject<MobilityModel>();
-            if (rxMm) {
-                Vector predicted = EstimateNextPos(matched->GetId(), det,
-                                                   m_predictionHorizon.GetSeconds());
-                NS_LOG_DEBUG("  prefetching cache for node " << matched->GetId()
-                             << " predicted pos (" << predicted.x << ","
-                             << predicted.y << "," << predicted.z << ")");
-                // TODO: Implement PrefetchEntry in SionnaPropagationCache
-                // m_cache->PrefetchEntry(rxMm, predicted);
             }
         }
     }
@@ -176,15 +176,11 @@ SionnaIsacBeamSteerer::FindNearest(const Vector& pos, double radius) const
 {
     Ptr<Node> best;
     double bestDist = std::numeric_limits<double>::max();
-
     for (auto& node : m_rxNodes) {
         Ptr<MobilityModel> mm = node->GetObject<MobilityModel>();
         if (!mm) continue;
         double d = CalculateDistance(mm->GetPosition(), pos);
-        if (d < bestDist && d <= radius) {
-            bestDist = d;
-            best = node;
-        }
+        if (d < bestDist && d <= radius) { bestDist = d; best = node; }
     }
     return best;
 }
@@ -192,32 +188,19 @@ SionnaIsacBeamSteerer::FindNearest(const Vector& pos, double radius) const
 Ptr<PhasedArrayModel>
 SionnaIsacBeamSteerer::GetPhasedArray(Ptr<Node> node) const
 {
-    auto registered = m_txPhasedArrays.find(node->GetId());
-    if (registered != m_txPhasedArrays.end())
-    {
-        return registered->second;
-    }
-
+    auto it = m_txPhasedArrays.find(node->GetId());
+    if (it != m_txPhasedArrays.end()) return it->second;
     for (uint32_t i = 0; i < node->GetNDevices(); ++i) {
-        Ptr<NetDevice> dev = node->GetDevice(i);
-        if (!dev) continue;
-        Ptr<PhasedArrayModel> arr = dev->GetObject<PhasedArrayModel>();
+        auto arr = node->GetDevice(i)->GetObject<PhasedArrayModel>();
         if (arr) return arr;
     }
     return nullptr;
 }
 
 const std::vector<SionnaDetectionRecord>&
-SionnaIsacBeamSteerer::GetAccumulatedDetections() const
-{
-    return m_accumulated;
-}
+SionnaIsacBeamSteerer::GetAccumulatedDetections() const { return m_accumulated; }
 
-void
-SionnaIsacBeamSteerer::ClearAccumulatedDetections()
-{
-    m_accumulated.clear();
-}
+void SionnaIsacBeamSteerer::ClearAccumulatedDetections() { m_accumulated.clear(); }
 
 Vector
 SionnaIsacBeamSteerer::EstimateNextPos(uint32_t nodeId,
@@ -226,23 +209,20 @@ SionnaIsacBeamSteerer::EstimateNextPos(uint32_t nodeId,
 {
     Vector detPos(det.x, det.y, det.z);
     auto it = m_track.find(nodeId);
-
     if (it != m_track.end() && it->second.lastTime >= 0.0) {
         double dt = det.time - it->second.lastTime;
         if (dt > 1e-9) {
             Vector v((detPos.x - it->second.lastPos.x) / dt,
                      (detPos.y - it->second.lastPos.y) / dt,
                      (detPos.z - it->second.lastPos.z) / dt);
-            Vector predicted(detPos.x + v.x * horizonSeconds,
-                             detPos.y + v.y * horizonSeconds,
-                             detPos.z + v.z * horizonSeconds);
             m_track[nodeId] = {detPos, det.time};
-            return predicted;
+            return Vector(detPos.x + v.x * horizonSeconds,
+                          detPos.y + v.y * horizonSeconds,
+                          detPos.z + v.z * horizonSeconds);
         }
     }
-
     m_track[nodeId] = {detPos, det.time};
-    return detPos; // first detection: no velocity estimate yet
+    return detPos;
 }
 
 } // namespace ns3

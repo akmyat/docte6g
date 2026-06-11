@@ -1,0 +1,297 @@
+{
+  "name": "warehouse_diagonal_nlos",
+  "purpose": "Keep 30 dBm gNB power while moving challenge UEs out of CQI/MCS saturation and forcing mobile links through rack-edge transitions.",
+  "scene": {
+    "source": "assets/scenes/warehouse/warehouse_v4.xml",
+    "usable_size_m": [
+      48.0,
+      38.0
+    ],
+    "bounds_m": {
+      "x_min": -24.0,
+      "x_max": 24.0,
+      "y_min": -19.0,
+      "y_max": 19.0
+    },
+    "racks": [
+      {
+        "name": "rack_A",
+        "x_min": -4.9,
+        "x_max": -2.8,
+        "y_min": -3.8,
+        "y_max": 14.2
+      },
+      {
+        "name": "rack_B",
+        "x_min": 4.7,
+        "x_max": 6.8,
+        "y_min": -3.8,
+        "y_max": 14.2
+      },
+      {
+        "name": "rack_C",
+        "x_min": 13.3,
+        "x_max": 15.4,
+        "y_min": -3.8,
+        "y_max": 14.2
+      },
+      {
+        "name": "rack_D",
+        "x_min": 22.0,
+        "x_max": 24.0,
+        "y_min": -3.8,
+        "y_max": 14.2
+      }
+    ]
+  },
+  "radio": {
+    "carrier_frequency_hz": 15000000000.0,
+    "bandwidth_hz": 190080000.0,
+    "gnb_tx_power_dbm": 30.0,
+    "ue_noise_figure_db": 17.0,
+    "receiver_noise_floor_dbm": -74.21,
+    "measured_mean_array_gain_db": {
+      "2x2": 1.93,
+      "4x4": 5.38,
+      "8x8": 11.55
+    },
+    "calibration_target": {
+      "challenge_path_loss_db": [
+        105.0,
+        115.0
+      ],
+      "challenge_net_link_loss_db": [
+        95.0,
+        110.0
+      ],
+      "two_by_two_estimated_sinr_db": [
+        -9.0,
+        1.0
+      ],
+      "eight_by_eight_estimated_sinr_db": [
+        0.0,
+        10.0
+      ],
+      "note": "These are ray-tracing calibration targets, not assumed losses. Add or move blockers if measured path loss is below 105 dB; relax one blocker if it exceeds 115 dB."
+    }
+  },
+  "gnb_look_at_m": [
+    8.0,
+    9.0,
+    1.5
+  ],
+  "nodes": [
+    {
+      "name": "gNB",
+      "role": "gnb",
+      "position_m": [
+        -22.0,
+        -17.0,
+        6.0
+      ]
+    },
+    {
+      "name": "rack_sensor_1",
+      "role": "fixed_rack_sensor",
+      "position_m": [
+        -1.8,
+        13.0,
+        1.5
+      ],
+      "radio_class": "far_nlos",
+      "distance_to_gnb_m": 36.45,
+      "free_space_path_loss_db": 87.2
+    },
+    {
+      "name": "rack_sensor_2",
+      "role": "fixed_rack_sensor",
+      "position_m": [
+        7.8,
+        13.0,
+        1.5
+      ],
+      "radio_class": "far_nlos",
+      "distance_to_gnb_m": 42.52,
+      "free_space_path_loss_db": 88.54
+    },
+    {
+      "name": "rack_sensor_3",
+      "role": "fixed_rack_sensor",
+      "position_m": [
+        12.3,
+        13.0,
+        1.5
+      ],
+      "radio_class": "far_nlos",
+      "distance_to_gnb_m": 45.79,
+      "free_space_path_loss_db": 89.19
+    },
+    {
+      "name": "rack_sensor_4",
+      "role": "fixed_rack_sensor",
+      "position_m": [
+        21.0,
+        13.0,
+        1.5
+      ],
+      "radio_class": "far_nlos",
+      "distance_to_gnb_m": 52.62,
+      "free_space_path_loss_db": 90.39
+    },
+    {
+      "name": "robot_1",
+      "role": "mobile_robot",
+      "position_m": [
+        -18.0,
+        -13.0,
+        1.5
+      ],
+      "radio_class": "mobile_transition",
+      "distance_to_gnb_m": 7.23,
+      "free_space_path_loss_db": 73.15
+    },
+    {
+      "name": "robot_2",
+      "role": "mobile_robot",
+      "position_m": [
+        -12.0,
+        -13.0,
+        1.5
+      ],
+      "radio_class": "mobile_transition",
+      "distance_to_gnb_m": 11.67,
+      "free_space_path_loss_db": 77.31
+    },
+    {
+      "name": "robot_3",
+      "role": "mobile_robot",
+      "position_m": [
+        -6.0,
+        -13.0,
+        1.5
+      ],
+      "radio_class": "mobile_transition",
+      "distance_to_gnb_m": 17.1,
+      "free_space_path_loss_db": 80.63
+    },
+    {
+      "name": "camera_1",
+      "role": "fixed_camera",
+      "position_m": [
+        20.0,
+        16.0,
+        4.0
+      ],
+      "radio_class": "far_nlos_high_load",
+      "distance_to_gnb_m": 53.45,
+      "free_space_path_loss_db": 90.53
+    }
+  ],
+  "package_sensors": [
+    {
+      "name": "package_sensor_1",
+      "position_m": [
+        19.0,
+        -15.5,
+        1.2
+      ]
+    },
+    {
+      "name": "package_sensor_2",
+      "position_m": [
+        9.0,
+        -15.5,
+        1.2
+      ]
+    }
+  ],
+  "drop_zone_m": [
+    22.0,
+    -8.0,
+    1.5
+  ],
+  "robot_routes": [
+    {
+      "name": "robot_1_route",
+      "waypoints_m": [
+        [
+          -18.0,
+          -13.0,
+          1.5
+        ],
+        [
+          19.0,
+          -15.5,
+          1.5
+        ],
+        [
+          7.8,
+          16.0,
+          1.5
+        ],
+        [
+          22.0,
+          -8.0,
+          1.5
+        ]
+      ]
+    },
+    {
+      "name": "robot_2_route",
+      "waypoints_m": [
+        [
+          -12.0,
+          -13.0,
+          1.5
+        ],
+        [
+          9.0,
+          -15.5,
+          1.5
+        ],
+        [
+          12.3,
+          16.0,
+          1.5
+        ],
+        [
+          22.0,
+          -8.0,
+          1.5
+        ]
+      ]
+    },
+    {
+      "name": "robot_3_route",
+      "waypoints_m": [
+        [
+          -6.0,
+          -13.0,
+          1.5
+        ],
+        [
+          19.0,
+          -15.5,
+          1.5
+        ],
+        [
+          -1.8,
+          16.0,
+          1.5
+        ],
+        [
+          22.0,
+          -8.0,
+          1.5
+        ]
+      ]
+    }
+  ],
+  "experiment_requirements": [
+    "Use identical geometry, seed, mobility, offered load, and baseline beam period.",
+    "Use sustained UDP traffic; 500 KB mission bursts do not load a 190 MHz link.",
+    "Keep at least one moderate control UE and report results per UE, not only averages.",
+    "Tune geometry until 2x2 CQI is mostly 4-10 and 8x8 CQI is mostly 9-14.",
+    "For ISAC gain, route robots around rack ends so azimuth and blockage change abruptly."
+  ]
+}

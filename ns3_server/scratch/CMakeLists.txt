@@ -2,3 +2,4 @@
 add_subdirectory(sionnart-nr-energy)
 add_subdirectory(benchmark_sionnart_ns3sionna)
 add_subdirectory(warehouse-isac)
+add_subdirectory(warehouse)

@@ -201,6 +201,9 @@ SionnaPyEmbed::SionnaInitialize(const SionnaInitSettings& s) {
             settings["isac_tracker_min_age"]   = s.isac_tracker_min_age;
             settings["isac_mti_warmup_frames"] = s.isac_mti_warmup_frames;
             settings["isac_rx_scattering_coefficient"] = s.isac_rx_scattering_coefficient;
+            settings["isac_detection_roi_margin"] = s.isac_detection_roi_margin;
+            if (s.isac_z_min >= 0.0) settings["isac_z_min"] = s.isac_z_min;
+            if (s.isac_z_max >= 0.0) settings["isac_z_max"] = s.isac_z_max;
             if (!s.rx_type_path.empty())
                 settings["rx_type_path"] = s.rx_type_path;
         }
@@ -343,15 +346,20 @@ SionnaPyEmbed::SionnaGetDetectedObjects(double since_time_s)
             py::dict frame = frame_item.cast<py::dict>();
             double t = frame["time"].cast<double>();
             py::list positions = frame["positions"].cast<py::list>();
+            py::list powers;
+            try {
+                powers = frame["powers"].cast<py::list>();
+            } catch (...) {}
             int track_id = 0;
-            for (auto pos_item : positions) {
-                py::list pos = pos_item.cast<py::list>();
+            for (size_t i = 0; i < positions.size(); ++i) {
+                py::list pos = positions[i].cast<py::list>();
                 SionnaDetectionRecord rec;
                 rec.time     = t;
                 rec.track_id = track_id++;
                 rec.x        = pos[0].cast<double>();
                 rec.y        = pos[1].cast<double>();
                 rec.z        = pos[2].cast<double>();
+                rec.power_w  = (i < powers.size()) ? powers[i].cast<double>() : 0.0;
                 results.push_back(rec);
             }
         }

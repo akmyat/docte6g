@@ -5,6 +5,7 @@
 #include "sionna-py-embed.h"
 #include "ns3/event-id.h"
 #include "ns3/mobility-model.h"
+#include "ns3/net-device.h"
 #include "ns3/node.h"
 #include "ns3/object.h"
 #include "ns3/phased-array-model.h"
@@ -12,6 +13,9 @@
 #include "ns3/nstime.h"
 #include <map>
 #include <vector>
+
+// Forward declaration — avoid pulling NR headers into every TU
+namespace ns3 { class IdealBeamformingHelper; }
 
 namespace ns3 {
 
@@ -21,12 +25,11 @@ namespace ns3 {
  * On every PollInterval:
  *   1. Queries SionnaGetDetectedObjects() for new radar detections.
  *   2. Matches each detection to the nearest registered RX node within MatchRadius.
- *   3. (Optional) Steers the phased-array beamforming vector of each TX node toward
- *      the detected position.
- *   4. (Optional) Pre-warms the propagation cache for the predicted next position of
- *      the matched node (linear extrapolation using the last two detections).
+ *   3. (Optional) Calls IdealBeamformingHelper::Run() so all gNB→UE beam pairs are
+ *      immediately refreshed via the NR BeamManager — the correct path that survives
+ *      across TX slots.  Requires SetBeamformingHelper() to be called.
+ *   4. (Optional) Pre-warms the propagation cache for the predicted next position.
  *
- * Works with any scenario topology — no warehouse-specific logic.
  * Register ALL RX nodes via AddRxNode(); the steerer discovers which are mobile at
  * runtime from ISAC detections (stationary nodes never appear in radar returns).
  */
@@ -40,44 +43,34 @@ class SionnaIsacBeamSteerer : public Object
 
     void SetPropagationCache(Ptr<SionnaPropagationCache> cache);
 
-    // Register transmitter nodes (gNB / AP). Beams on these nodes are steered.
-    void AddTxNode(Ptr<Node> txNode);
+    // Supply the NR beamforming helper. When EnableBeamSteering=true and a mobile
+    // UE is detected, Run() is called to immediately refresh all registered beam pairs
+    // through BeamManager, overcoming the periodic-update limitation.
+    void SetBeamformingHelper(Ptr<IdealBeamformingHelper> bfHelper);
 
-    // Register the phased array used by a transmitter node.
+    // Register transmitter nodes (used for fallback direct phased-array steering).
+    void AddTxNode(Ptr<Node> txNode);
     void SetTxPhasedArray(Ptr<Node> txNode, Ptr<PhasedArrayModel> array);
 
-    // Register receiver nodes. Pass ALL UEs; the steerer filters by ISAC detection.
+    // Register receiver nodes. Pass ALL UEs.
     void AddRxNode(Ptr<Node> rxNode);
 
-    // Start periodic polling. Must be called after Simulator::Run() is scheduled.
     void Start();
-
-    // Cancel pending events.
     void Stop();
 
-    // Return all detections accumulated across every poll since Start() was called.
-    // Use this for post-simulation analysis instead of calling SionnaGetDetectedObjects()
-    // directly, since each poll call consumes detections from Python.
     const std::vector<SionnaDetectionRecord>& GetAccumulatedDetections() const;
     void ClearAccumulatedDetections();
 
   private:
     void Poll();
-
-    // Return the registered RX node whose current position is closest to pos and
-    // within radius metres. Returns null if no match.
     Ptr<Node> FindNearest(const Vector& pos, double radius) const;
-
-    // Return the first PhasedArrayModel found on any NetDevice of node.
     Ptr<PhasedArrayModel> GetPhasedArray(Ptr<Node> node) const;
-
-    // Estimate next position for nodeId using velocity from last two detections.
-    // Falls back to current actual position on first detection.
     Vector EstimateNextPos(uint32_t nodeId,
                            const SionnaDetectionRecord& det,
                            double horizonSeconds);
 
-    Ptr<SionnaPropagationCache> m_cache;
+    Ptr<SionnaPropagationCache>  m_cache;
+    Ptr<IdealBeamformingHelper>  m_bfHelper;  // preferred: Run() path via BeamManager
 
     std::vector<Ptr<Node>> m_txNodes;
     std::vector<Ptr<Node>> m_rxNodes;
@@ -92,11 +85,8 @@ class SionnaIsacBeamSteerer : public Object
     double   m_lastPollTime = -1.0;
     EventId  m_pollEvent;
 
-    struct TrackState {
-        Vector lastPos;
-        double lastTime = -1.0;
-    };
-    std::map<uint32_t, TrackState> m_track; // keyed by Node ID
+    struct TrackState { Vector lastPos; double lastTime = -1.0; };
+    std::map<uint32_t, TrackState>  m_track;
     std::vector<SionnaDetectionRecord> m_accumulated;
 };
 

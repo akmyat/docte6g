@@ -41,6 +41,7 @@ build_lib(
         ${libantenna}
         ${libspectrum}
         ${libwifi}
+        ${libnr}
         pybind11::embed
         Python3::Python
 )

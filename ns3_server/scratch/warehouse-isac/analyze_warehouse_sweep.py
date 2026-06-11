@@ -42,29 +42,64 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def run_succeeded(run_dir: Path) -> bool:
+    log_path = run_dir / "run.log"
+    if not log_path.exists():
+        return False
+    log = log_path.read_text(errors="replace")
+    return (
+        "ERROR: Warehouse MQTT verification failed." not in log
+        and "returned non-zero exit status" not in log
+    )
+
+
 def challenge_flow(row: dict[str, str]) -> bool:
     port = int(row["DstPort"])
-    return 12000 <= port < 16000
+    # ISAC tracks mobile robots, so the primary comparison uses only their DL
+    # mission payloads. Camera UL is reported separately because the all-flex
+    # TDD scheduler can starve it while DL mission queues are active.
+    return 20001 <= port <= 20003
 
 
 def port_class(row: dict[str, str]) -> str:
     port = int(row["DstPort"])
-    if 12000 <= port < 13000:
-        return "static"
-    if 13000 <= port < 14000:
-        return "robot"
-    if 14000 <= port < 16000:
-        return "uplink"
+    if 20001 <= port <= 20003:
+        return "robot"   # mobile robot DL showcase payload
+    if port == 10000:
+        return "video"   # fixed camera video UL diagnostic
     return "other"
 
 
 def summarize_flows(flows: list[dict[str, str]]) -> dict[str, float]:
     tx_packets = sum(int(row["TxPackets"]) for row in flows)
     rx_packets = sum(int(row["RxPackets"]) for row in flows)
+    confirmed_loss_available = all("UnreceivedPackets" in row for row in flows)
+    lost_packets = (
+        sum(int(row.get("LostPackets", 0)) for row in flows)
+        if confirmed_loss_available
+        else 0
+    )
+    tx_bytes = sum(int(row["TxBytes"]) for row in flows)
+    rx_bytes = sum(int(row["RxBytes"]) for row in flows)
+    sim_time = max(
+        (
+            float(row["RxBytes"]) * 8.0
+            / (float(row["SimGoodput_Kbps"]) * 1024.0)
+            for row in flows
+            if float(row["SimGoodput_Kbps"]) > 0.0
+        ),
+        default=0.0,
+    )
     return {
         "flows": len(flows),
+        "confirmed_loss_available": confirmed_loss_available,
         "delivery_pct": 100.0 * rx_packets / tx_packets if tx_packets else 0.0,
-        "goodput_kbps": sum(float(row["SimGoodput_Kbps"]) for row in flows),
+        "loss_pct": 100.0 * lost_packets / tx_packets if tx_packets else 0.0,
+        "unreceived_pct": 100.0 * (tx_packets - rx_packets) / tx_packets
+        if tx_packets
+        else 0.0,
+        "offered_kbps": tx_bytes * 8.0 / sim_time / 1024.0 if sim_time else 0.0,
+        "goodput_kbps": rx_bytes * 8.0 / sim_time / 1024.0 if sim_time else 0.0,
     }
 
 
@@ -98,10 +133,11 @@ def summarize_run(results_dir: Path, mode: str, size: int) -> dict[str, object] 
     if not summary_path.exists() or not flow_path.exists():
         return None
     flows = [row for row in read_csv(flow_path) if challenge_flow(row)]
-    static_flows = [row for row in flows if port_class(row) == "static"]
+    all_flows = read_csv(flow_path)
+    video_flows = [row for row in all_flows if port_class(row) == "video"]
     robot_flows = [row for row in flows if port_class(row) == "robot"]
     aggregate = summarize_flows(flows)
-    static = summarize_flows(static_flows)
+    video = summarize_flows(video_flows)
     robot = summarize_flows(robot_flows)
     propagation = read_csv(run_dir / "propagation_stats.csv")
     gains = read_csv(run_dir / "mimo_channel_gain_stats.csv")
@@ -110,28 +146,50 @@ def summarize_run(results_dir: Path, mode: str, size: int) -> dict[str, object] 
         for row in read_csv(run_dir / "sensing_stats.csv")
         if row.get("DetectionIndex", "").strip()
     ]
+    detection_powers = [
+        float(row["Power_W"])
+        for row in detections
+        if row.get("Power_W", "").strip() and float(row.get("Power_W", "0") or "0") > 0
+    ]
+    mean_detection_power_w = mean(detection_powers) if detection_powers else 0.0
+    mean_detection_power_dbw = (
+        10 * __import__("math").log10(mean_detection_power_w)
+        if mean_detection_power_w > 0 else float("-inf")
+    )
     beams = [
         row
         for row in read_csv(run_dir / "isac_beam_stats.csv")
         if csv_bool(row.get("Active", ""))
     ]
     robot_ue_start = int(read_summary_value(summary_path, "mobile_robot_ue_start_index") or 3)
+    mean_pathloss_db = mean([float(row["Pathloss_dB"]) for row in propagation])
+    mean_array_gain_db = mean(
+        [float(row["AvgEffectiveChannelGain_dB"]) for row in gains]
+    )
 
     return {
         "mode": mode,
         "array": f"{size}x{size}",
+        "run_succeeded": run_succeeded(run_dir),
+        "confirmed_loss_available": aggregate["confirmed_loss_available"],
         "challenge_flows": aggregate["flows"],
         "delivery_pct": aggregate["delivery_pct"],
+        "loss_pct": aggregate["loss_pct"],
+        "unreceived_pct": aggregate["unreceived_pct"],
+        "offered_kbps": aggregate["offered_kbps"],
         "goodput_kbps": aggregate["goodput_kbps"],
-        "static_delivery_pct": static["delivery_pct"],
-        "static_goodput_kbps": static["goodput_kbps"],
+        "video_delivery_pct": video["delivery_pct"],
+        "video_loss_pct": video["loss_pct"],
+        "video_goodput_kbps": video["goodput_kbps"],
         "robot_delivery_pct": robot["delivery_pct"],
+        "robot_loss_pct": robot["loss_pct"],
         "robot_goodput_kbps": robot["goodput_kbps"],
-        "mean_loss_db": mean([float(row["Loss_dB"]) for row in propagation]),
-        "mean_array_gain_db": mean(
-            [float(row["AvgEffectiveChannelGain_dB"]) for row in gains]
-        ),
+        "mean_pathloss_db": mean_pathloss_db,
+        "mean_array_gain_db": mean_array_gain_db,
+        "mean_net_link_loss_db": mean_pathloss_db - mean_array_gain_db,
         "detections": len(detections),
+        "mean_detection_power_w": mean_detection_power_w,
+        "mean_detection_power_dbw": mean_detection_power_dbw,
         "active_beams": len(beams),
         "robot_motion_distance_m": robot_motion_distance_m(run_dir, robot_ue_start),
         "ideal_analog_array_gain": read_summary_value(summary_path, "ideal_analog_array_gain"),
@@ -177,22 +235,29 @@ def main() -> int:
         writer.writerows(rows)
 
     print(
-        "mode     array  delivery   goodput Kbps  robot del  robot Kbps"
-        "  robot m  loss dB  array gain dB  detections  beams  wall s"
+        "mode     array valid  delivery  confirmed/unrecv loss   goodput Kbps  robot del"
+        "  pathloss  array gain  net loss  detections  det power dBW  wall s"
     )
     for row in rows:
+        det_pwr = row["mean_detection_power_dbw"]
+        det_pwr_str = f"{det_pwr:13.1f}" if det_pwr != float("-inf") else "          n/a"
         print(
-            f"{row['mode']:8s} {row['array']:>4s}  {row['delivery_pct']:8.2f}%"
+            f"{row['mode']:8s} {row['array']:>4s}  {str(row['run_succeeded']):>5s}"
+            f"  {row['delivery_pct']:7.2f}%"
+            f"  {row['loss_pct']:5.2f}/{row['unreceived_pct']:5.2f}%"
+            f"{'' if row['confirmed_loss_available'] else '*'}"
             f"  {row['goodput_kbps']:12.2f}  {row['robot_delivery_pct']:8.2f}%"
-            f"  {row['robot_goodput_kbps']:10.2f}  {row['robot_motion_distance_m']:7.1f}"
-            f"  {row['mean_loss_db']:7.2f}"
-            f"  {row['mean_array_gain_db']:13.2f}  {row['detections']:10d}"
-            f"  {row['active_beams']:5d}"
-            f"  {row['wall_clock_s']:6.1f}"
+            f"  {row['mean_pathloss_db']:8.2f}"
+            f"  {row['mean_array_gain_db']:10.2f}"
+            f"  {row['mean_net_link_loss_db']:8.2f}  {row['detections']:10d}"
+            f"  {det_pwr_str}  {row['wall_clock_s']:6.1f}"
         )
 
     if missing:
         print("missing: " + ", ".join(missing))
+    if any(not row["confirmed_loss_available"] for row in rows):
+        print("* legacy flow_stats.csv: confirmed FlowMonitor loss is unavailable; "
+              "the old LostPackets column was unreceived packets")
 
     for mode in ("no-isac", "isac"):
         selected = [row for row in rows if row["mode"] == mode]
@@ -200,9 +265,7 @@ def main() -> int:
             print(f"{mode}: monotonic checks skipped; incomplete array set")
             continue
         gains = [float(row["mean_array_gain_db"]) for row in selected]
-        static_goodput = [float(row["static_goodput_kbps"]) for row in selected]
         print(f"{mode}: monotonic array gain = {nondecreasing(gains)}")
-        print(f"{mode}: monotonic static goodput = {nondecreasing(static_goodput)}")
     print(f"summary: {output}")
     return 0
 

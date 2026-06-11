@@ -2,11 +2,13 @@
 #define WAREHOUSE_CONTROLLER_APP_H
 
 #include "ns3/application.h"
+#include "ns3/mobility-model.h"
 #include "ns3/mqtt-client-application.h"
 #include "ns3/random-variable-stream.h"
 #include "ns3/sionna-py-embed.h"
 #include "ns3/vector.h"
 #include <set>
+#include <unordered_set>
 #include <map>
 #include <vector>
 #include <queue>
@@ -33,7 +35,7 @@ struct RackInfo {
 
 struct RobotInfo {
     std::string id;
-    std::string status; // IDLE, MOVING_TO_PAYLOAD, MOVING_TO_RACK, MOVING_TO_PICKUP_ZONE
+    std::string status; // IDLE, MOVING_TO_PAYLOAD, MOVING_TO_RACK_STORE, MOVING_TO_RACK_RETRIEVE, MOVING_TO_PICKUP_ZONE
     std::string currentPackageId;
 };
 
@@ -77,7 +79,6 @@ class WarehouseControllerApp : public Application {
         virtual ~WarehouseControllerApp();
 
         void SetMqttClient(Ptr<MqttClientApp> mqttClient);
-        void SetRetrievalProbability(double prob);
     
     protected:
         virtual void StartApplication() override;
@@ -93,16 +94,14 @@ class WarehouseControllerApp : public Application {
             bool retain,
             uint16_t packetId
         );
-        void ScheduleNextRetrievalCheck();
-        void CheckRetrieval();
         void AssignTasks();
-        void CompleteStoreFallback(std::string robotId, std::string packageId, std::string rackId);
+        void CompleteStoreFallback(std::string robotId, std::string packageId, std::string rackId, int retryCount);
         void DispatchDropFallback(std::string robotId, std::string packageId);
+        void BroadcastMission(const std::string& robotId, const std::string& command,
+                              const std::string& packageId, const std::vector<double>& target,
+                              const std::string& rackId, const Package* pkg = nullptr);
 
         Ptr<MqttClientApp> m_mqttClient;
-        double m_retrievalProbability;
-        Ptr<UniformRandomVariable> m_rv;
-        EventId m_retrievalCheckEvent;
         uint32_t m_checkInterval;
         std::vector<TempData> m_tempLogs;
         std::vector<HumidityData> m_humidityLogs;
@@ -113,6 +112,7 @@ class WarehouseControllerApp : public Application {
         // Warehouse Management State
         std::queue<Package> m_unassignedPackages;
         std::queue<std::string> m_pendingWithdrawals;
+        std::unordered_set<std::string> m_pendingWithdrawalSet;
         std::map<std::string, Package> m_allPackages; // id -> package
         std::map<std::string, RackInfo> m_racks;
         std::map<std::string, RobotInfo> m_robots;
@@ -125,6 +125,7 @@ class WarehouseControllerApp : public Application {
 
         // ISAC Tracking State
         std::map<std::string, ObjectTrackingInfo> m_robotTrackingMap;
+        std::vector<std::pair<std::string, Ptr<MobilityModel>>> m_robotMobilities;
         EventId m_trackEvent;
         void TrackObjectsPeriodic();
 };

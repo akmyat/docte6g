@@ -1,0 +1,380 @@
+{
+  "name": "warehouse_large_v2",
+  "warehouse_size_m": "200 N-S \u00d7 100 E-W",
+  "gnb_tx_power_dbm": 30.0,
+  "carrier_frequency_hz": 15000000000.0,
+  "bandwidth_hz": 200000000.0,
+  "design_rationale": "200 m \u00d7 100 m warehouse forces 160 m gNB-to-sensor paths. 5 metal rack rows provide 0-2 penetrations per sensor. At 30 dBm, FSPL alone gives SNR=+20 dB (saturated). Each rack crossing adds ~12 dB loss, creating clear 2\u00d72/4\u00d74/8\u00d78 tiers.",
+  "scene": {
+    "bounds_m": {
+      "x_min": -50.0,
+      "x_max": 50.0,
+      "y_min": -100.0,
+      "y_max": 100.0
+    },
+    "ceiling_height_m": 10.0,
+    "rack_zone": {
+      "y_start": -80.0,
+      "y_end": 80.0,
+      "length_m": 160.0
+    },
+    "staging_zone": {
+      "y_start": -100.0,
+      "y_end": -80.0,
+      "length_m": 20.0
+    },
+    "racks": [
+      {
+        "name": "rack_row_1",
+        "x_min": -42.0,
+        "x_max": -37.0,
+        "y_min": -80.0,
+        "y_max": 80.0,
+        "z_min": 0.0,
+        "z_max": 5.0,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_2",
+        "x_min": -23.0,
+        "x_max": -18.0,
+        "y_min": -80.0,
+        "y_max": 80.0,
+        "z_min": 0.0,
+        "z_max": 5.0,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_3",
+        "x_min": -4.0,
+        "x_max": 1.0,
+        "y_min": -80.0,
+        "y_max": 80.0,
+        "z_min": 0.0,
+        "z_max": 5.0,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_4",
+        "x_min": 15.0,
+        "x_max": 20.0,
+        "y_min": -80.0,
+        "y_max": 80.0,
+        "z_min": 0.0,
+        "z_max": 5.0,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_5",
+        "x_min": 34.0,
+        "x_max": 39.0,
+        "y_min": -80.0,
+        "y_max": 80.0,
+        "z_min": 0.0,
+        "z_max": 5.0,
+        "material": "itu_metal"
+      }
+    ],
+    "conveyor": {
+      "name": "conveyor_belt",
+      "x_min": -10.0,
+      "x_max": 10.0,
+      "y_min": -97.0,
+      "y_max": -88.0,
+      "z_min": 0.0,
+      "z_max": 0.8,
+      "material": "itu_metal"
+    }
+  },
+  "gnb": {
+    "position_m": [
+      8.0,
+      -95.0,
+      8.0
+    ],
+    "look_at_m": [
+      0.0,
+      0.0,
+      1.5
+    ],
+    "note": "Centre of Aisle 3 at south end, 8 m elevation"
+  },
+  "rack_sensors": [
+    {
+      "name": "rack_sensor_1",
+      "role": "fixed_rack_sensor",
+      "aisle": "A1",
+      "rack_crossings": 2,
+      "crossing_rows": [
+        "R3",
+        "R2"
+      ],
+      "position_m": [
+        -30.0,
+        65.0,
+        1.5
+      ],
+      "distance_m": 164.6,
+      "fspl_db": 100.3,
+      "total_pl_db": 124.3,
+      "snr_db": {
+        "2x2": -4.3,
+        "4x4": 1.7,
+        "8x8": 7.7
+      },
+      "snr_fspl_only": {
+        "2x2": 19.7,
+        "4x4": 25.7,
+        "8x8": 31.7
+      }
+    },
+    {
+      "name": "rack_sensor_2",
+      "role": "fixed_rack_sensor",
+      "aisle": "A2",
+      "rack_crossings": 1,
+      "crossing_rows": [
+        "R3"
+      ],
+      "position_m": [
+        -11.0,
+        65.0,
+        1.5
+      ],
+      "distance_m": 161.3,
+      "fspl_db": 100.1,
+      "total_pl_db": 112.1,
+      "snr_db": {
+        "2x2": 7.9,
+        "4x4": 13.9,
+        "8x8": 19.9
+      },
+      "snr_fspl_only": {
+        "2x2": 19.9,
+        "4x4": 25.9,
+        "8x8": 31.9
+      }
+    },
+    {
+      "name": "rack_sensor_3",
+      "role": "fixed_rack_sensor",
+      "aisle": "A3",
+      "rack_crossings": 0,
+      "crossing_rows": [],
+      "position_m": [
+        8.0,
+        65.0,
+        1.5
+      ],
+      "distance_m": 160.1,
+      "fspl_db": 100.1,
+      "total_pl_db": 100.1,
+      "snr_db": {
+        "2x2": 19.9,
+        "4x4": 25.9,
+        "8x8": 31.9
+      },
+      "snr_fspl_only": {
+        "2x2": 19.9,
+        "4x4": 25.9,
+        "8x8": 31.9
+      }
+    },
+    {
+      "name": "rack_sensor_4",
+      "role": "fixed_rack_sensor",
+      "aisle": "A4",
+      "rack_crossings": 1,
+      "crossing_rows": [
+        "R4"
+      ],
+      "position_m": [
+        27.0,
+        65.0,
+        1.5
+      ],
+      "distance_m": 161.3,
+      "fspl_db": 100.1,
+      "total_pl_db": 112.1,
+      "snr_db": {
+        "2x2": 7.9,
+        "4x4": 13.9,
+        "8x8": 19.9
+      },
+      "snr_fspl_only": {
+        "2x2": 19.9,
+        "4x4": 25.9,
+        "8x8": 31.9
+      }
+    }
+  ],
+  "mobile_robots": [
+    {
+      "name": "robot_1",
+      "start_position_m": [
+        -30.0,
+        -85.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_1_route",
+        "waypoints_m": [
+          [
+            -30.0,
+            -85.0,
+            1.5
+          ],
+          [
+            -30.0,
+            65.0,
+            1.5
+          ],
+          [
+            -30.0,
+            -85.0,
+            1.5
+          ]
+        ]
+      }
+    },
+    {
+      "name": "robot_2",
+      "start_position_m": [
+        -11.0,
+        -85.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_2_route",
+        "waypoints_m": [
+          [
+            -11.0,
+            -85.0,
+            1.5
+          ],
+          [
+            -11.0,
+            65.0,
+            1.5
+          ],
+          [
+            -11.0,
+            -85.0,
+            1.5
+          ]
+        ]
+      }
+    },
+    {
+      "name": "robot_3",
+      "start_position_m": [
+        8.0,
+        -85.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_3_route",
+        "waypoints_m": [
+          [
+            8.0,
+            -85.0,
+            1.5
+          ],
+          [
+            8.0,
+            65.0,
+            1.5
+          ],
+          [
+            8.0,
+            -85.0,
+            1.5
+          ]
+        ]
+      }
+    }
+  ],
+  "package_sensors": [
+    {
+      "name": "package_sensor_1",
+      "position_m": [
+        -5.0,
+        -91.0,
+        1.2
+      ]
+    },
+    {
+      "name": "package_sensor_2",
+      "position_m": [
+        5.0,
+        -91.0,
+        1.2
+      ]
+    }
+  ],
+  "video_client": {
+    "name": "video_client_1",
+    "position_m": [
+      48.0,
+      90.0,
+      1.5
+    ]
+  },
+  "drop_zone_m": [
+    0.0,
+    -90.0,
+    1.5
+  ],
+  "ns3_integration": {
+    "rackSensorPositions": [
+      [
+        -30.0,
+        65.0,
+        1.5
+      ],
+      [
+        -11.0,
+        65.0,
+        1.5
+      ],
+      [
+        8.0,
+        65.0,
+        1.5
+      ],
+      [
+        27.0,
+        65.0,
+        1.5
+      ]
+    ],
+    "mobileRobotPositions": [
+      [
+        -30.0,
+        -85.0,
+        1.5
+      ],
+      [
+        -11.0,
+        -85.0,
+        1.5
+      ],
+      [
+        8.0,
+        -85.0,
+        1.5
+      ]
+    ],
+    "gnbPos": [
+      8.0,
+      -95.0,
+      8.0
+    ],
+    "gnbLookAt": [
+      0.0,
+      0.0,
+      1.5
+    ],
+    "bounds_BoxValue": "Box(-50.0, 50.0, -100.0, 100.0, 0.0, 2.0)"
+  }
+}

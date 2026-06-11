@@ -1,5 +1,6 @@
 set(header_files
     model/warehouse-controller-app.h
+    model/warehouse-mission-server-app.h
     model/warehouse-temp-sensor-app.h
     model/warehouse-humidity-sensor-app.h
     model/warehouse-camera-app.h
@@ -12,6 +13,7 @@ set(header_files
 
 set(sources_files
     model/warehouse-controller-app.cc
+    model/warehouse-mission-server-app.cc
     model/warehouse-temp-sensor-app.cc
     model/warehouse-humidity-sensor-app.cc
     model/warehouse-camera-app.cc

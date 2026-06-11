@@ -12,21 +12,16 @@ class WarehouseVideoClientApp : public Application {
         static TypeId GetTypeId();
         WarehouseVideoClientApp();
         virtual ~WarehouseVideoClientApp();
-        
+
         void SetMqttClient(Ptr<MqttClientApp> mqttClient);
-        void SetClientId(const std::string& clientId);
         void SetLocalPort(uint16_t port);
-        
-        void RequestCameraStream(const std::string& cameraId, Ipv4Address myIp);
-        void StopCameraStream(const std::string& cameraId);
-    
+
     protected:
         virtual void StartApplication(void) override;
         virtual void StopApplication(void) override;
-    
+
     private:
         void StartListening();
-        void HandleConnection(Ptr<Socket> socket, const Address& from);
         void HandleRead(Ptr<Socket> socket);
         void Register();
         void PublishStatus();
@@ -35,10 +30,7 @@ class WarehouseVideoClientApp : public Application {
         std::string m_clientId;
         uint16_t m_localPort;
 
-        std::set<std::string> m_activeStreams;
         Ptr<Socket> m_listenSocket;
-        Ptr<Socket> m_peerSocket;
-
         uint64_t m_totalRxBytes;
         EventId m_statusEvent;
 };

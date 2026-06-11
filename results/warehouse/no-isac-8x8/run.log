@@ -1,92 +1,42 @@
 ninja: no work to do.
-/home/aung/anaconda3/envs/6G/lib/python3.12/site-packages/torch/cuda/__init__.py:1007: UserWarning: Can't initialize NVML
-  raw_cnt = _raw_device_count_nvml()
 /home/aung/anaconda3/envs/6G/lib/python3.12/site-packages/torch/cuda/__init__.py:435: UserWarning: 
     Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
     Minimum and Maximum cuda capability supported by this version of PyTorch is
     (8.0) - (12.0)
     
   queued_call()
+pybullet build time: Jan  6 2026 23:44:17
 === Warehouse No-ISAC Simulation ===
-Scene:       /home/aung/code/docte6g/assets/scenes/warehouse/warehouse.xml
+Scene:       /home/aung/code/docte6g/assets/scenes/warehouse/warehouse_v5.xml
 Frequency:   15 GHz
 ISAC:        DISABLED
-Sim time:    600 s
+Sim time:    180 s
 Starting simulation...
-pybullet build time: Jan  6 2026 23:44:17
 
 === Simulation Complete ===
-Total flows:  48
-Total TxPkts: 5411
-Total RxPkts: 5187
-MQTT TxPkts:  5008
-MQTT RxPkts:  4808
-MQTT Tput:    20.44 Kbps
-Temp publishes: 118, controller temp receives: 118
-Humidity publishes: 118, controller humidity receives: 6
-Package publishes: 353, controller package receives: 353
-Rack registers: 3
-Withdrawal queries: 119, package lists: 119, withdrawal requests: 8
-Robot route completions: package pickup=4, rack store=4, rack retrieve=7, pickup-zone drop=6
-UE1 MQTT RxPkts: 293 Tput: 0.37 Kbps
-UE2 MQTT RxPkts: 53 Tput: 1.39 Kbps
-UE3 MQTT RxPkts: 39 Tput: 0.03 Kbps
-UE4 MQTT RxPkts: 66 Tput: 5.93 Kbps
-UE5 MQTT RxPkts: 155 Tput: 1.40 Kbps
-UE6 MQTT RxPkts: 65 Tput: 5.74 Kbps
-robot1 MQTT RxPkts: 66 Tput: 5.93 Kbps, Video RxPkts: 4 Tput: 12.52 Kbps
-robot2 MQTT RxPkts: 155 Tput: 1.40 Kbps, Video RxPkts: 171 Tput: 5.54 Kbps
-robot3 MQTT RxPkts: 65 Tput: 5.74 Kbps, Video RxPkts: 4 Tput: 12.52 Kbps
-SUCCESS: all UEs, sensors, withdrawal MQTT, robot route phases, and robot MQTT/video flows are verified
-
---- Per-Flow Summary ---
-Flow 1 [13.0.0.5:2123 -> 13.0.0.6:2123] Proto=UDP Tx=6 Rx=6 Tput=9633458.65 Kbps
-Flow 2 [14.0.0.6:2123 -> 14.0.0.5:2123] Proto=UDP Tx=6 Rx=6 Tput=9633458.65 Kbps
-Flow 3 [14.0.0.5:2123 -> 14.0.0.6:2123] Proto=UDP Tx=6 Rx=6 Tput=8740421.46 Kbps
-Flow 4 [13.0.0.6:2123 -> 13.0.0.5:2123] Proto=UDP Tx=6 Rx=6 Tput=8740421.46 Kbps
-Flow 5 [7.0.0.1:49153 -> 7.0.0.1:1883] Proto=TCP Tx=882 Rx=882 Tput=0.75 Kbps
-Flow 6 [7.0.0.1:1883 -> 7.0.0.1:49153] Proto=TCP Tx=1263 Rx=1263 Tput=2.23 Kbps
-Flow 7 [7.0.0.1:49154 -> 7.0.0.1:1883] Proto=TCP Tx=371 Rx=371 Tput=0.32 Kbps
-Flow 8 [7.0.0.1:1883 -> 7.0.0.1:49154] Proto=TCP Tx=361 Rx=361 Tput=0.31 Kbps
-Flow 9 [7.0.0.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=124 Rx=124 Tput=0.23 Kbps
-Flow 10 [7.0.0.1:1883 -> 7.0.0.2:49153] Proto=TCP Tx=124 Rx=123 Tput=0.08 Kbps
-Flow 11 [7.0.0.3:49153 -> 7.0.0.1:1883] Proto=TCP Tx=24 Rx=12 Tput=0.33 Kbps
-Flow 12 [7.0.0.1:1883 -> 7.0.0.3:49153] Proto=TCP Tx=12 Rx=11 Tput=0.14 Kbps
-Flow 13 [21.0.1.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=242 Rx=242 Tput=0.48 Kbps
-Flow 14 [7.0.0.1:1883 -> 21.0.1.2:49153] Proto=TCP Tx=122 Rx=122 Tput=0.09 Kbps
-Flow 15 [21.0.2.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=242 Rx=242 Tput=0.48 Kbps
-Flow 16 [7.0.0.1:1883 -> 21.0.2.2:49153] Proto=TCP Tx=122 Rx=122 Tput=0.09 Kbps
-Flow 17 [21.0.3.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=240 Rx=240 Tput=0.48 Kbps
-Flow 18 [7.0.0.1:1883 -> 21.0.3.2:49153] Proto=TCP Tx=121 Rx=121 Tput=0.09 Kbps
-Flow 19 [7.0.0.2:49154 -> 7.0.0.1:1883] Proto=TCP Tx=28 Rx=28 Tput=0.03 Kbps
-Flow 20 [7.0.0.1:1883 -> 7.0.0.2:49154] Proto=TCP Tx=18 Rx=18 Tput=0.02 Kbps
-Flow 21 [20.0.1.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=31 Rx=31 Tput=0.07 Kbps
-Flow 22 [7.0.0.1:1883 -> 20.0.1.2:49153] Proto=TCP Tx=26 Rx=26 Tput=0.02 Kbps
-Flow 23 [7.0.0.3:49154 -> 7.0.0.1:1883] Proto=TCP Tx=34 Rx=8 Tput=0.40 Kbps
-Flow 24 [7.0.0.1:1883 -> 7.0.0.3:49154] Proto=TCP Tx=22 Rx=22 Tput=0.53 Kbps
-Flow 25 [20.0.2.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=31 Rx=31 Tput=0.07 Kbps
-Flow 26 [7.0.0.1:1883 -> 20.0.2.2:49153] Proto=TCP Tx=26 Rx=26 Tput=0.02 Kbps
-Flow 27 [7.0.0.4:49153 -> 7.0.0.1:1883] Proto=TCP Tx=25 Rx=25 Tput=0.02 Kbps
-Flow 28 [7.0.0.1:1883 -> 7.0.0.4:49153] Proto=TCP Tx=15 Rx=14 Tput=0.01 Kbps
-Flow 29 [20.0.3.2:49153 -> 7.0.0.1:1883] Proto=TCP Tx=31 Rx=31 Tput=0.07 Kbps
-Flow 30 [7.0.0.1:1883 -> 20.0.3.2:49153] Proto=TCP Tx=26 Rx=26 Tput=0.02 Kbps
-Flow 31 [7.0.0.5:49153 -> 7.0.0.1:1883] Proto=TCP Tx=41 Rx=12 Tput=2.42 Kbps
-Flow 32 [7.0.0.1:1883 -> 7.0.0.5:49153] Proto=TCP Tx=26 Rx=25 Tput=0.60 Kbps
-Flow 33 [7.0.0.5:49154 -> 7.0.0.1:1883] Proto=TCP Tx=37 Rx=8 Tput=2.46 Kbps
-Flow 34 [7.0.0.1:1883 -> 7.0.0.5:49154] Proto=TCP Tx=21 Rx=21 Tput=0.45 Kbps
-Flow 35 [7.0.0.6:49153 -> 7.0.0.1:1883] Proto=TCP Tx=101 Rx=67 Tput=0.65 Kbps
-Flow 36 [7.0.0.1:1883 -> 7.0.0.6:49153] Proto=TCP Tx=64 Rx=63 Tput=0.32 Kbps
-Flow 37 [7.0.0.6:49154 -> 7.0.0.1:1883] Proto=TCP Tx=21 Rx=12 Tput=0.21 Kbps
-Flow 38 [7.0.0.1:1883 -> 7.0.0.6:49154] Proto=TCP Tx=13 Rx=13 Tput=0.21 Kbps
-Flow 39 [7.0.0.7:49153 -> 7.0.0.1:1883] Proto=TCP Tx=37 Rx=11 Tput=2.24 Kbps
-Flow 40 [7.0.0.1:1883 -> 7.0.0.7:49153] Proto=TCP Tx=26 Rx=25 Tput=0.60 Kbps
-Flow 41 [7.0.0.5:49155 -> 20.0.1.2:10000] Proto=TCP Tx=12 Rx=4 Tput=12.52 Kbps
-Flow 42 [7.0.0.7:49154 -> 7.0.0.1:1883] Proto=TCP Tx=37 Rx=8 Tput=2.46 Kbps
-Flow 43 [7.0.0.1:1883 -> 7.0.0.7:49154] Proto=TCP Tx=21 Rx=21 Tput=0.44 Kbps
-Flow 44 [20.0.1.2:10000 -> 7.0.0.5:49155] Proto=TCP Tx=3 Rx=3 Tput=1.77 Kbps
-Flow 45 [7.0.0.6:49155 -> 20.0.2.2:10001] Proto=TCP Tx=179 Rx=171 Tput=5.54 Kbps
-Flow 46 [20.0.2.2:10001 -> 7.0.0.6:49155] Proto=TCP Tx=170 Rx=170 Tput=0.82 Kbps
-Flow 47 [7.0.0.7:49155 -> 20.0.3.2:10002] Proto=TCP Tx=12 Rx=4 Tput=12.52 Kbps
-Flow 48 [20.0.3.2:10002 -> 7.0.0.7:49155] Proto=TCP Tx=3 Rx=3 Tput=1.77 Kbps
-
-Results written to: /home/aung/code/docte6g/results/warehouse/no-isac-8x8
+Total flows:  47
+Total TxPkts: 86182
+Total RxPkts: 86145
+MQTT TxPkts:  1780
+MQTT RxPkts:  1749
+MQTT Tput:    7.34 Kbps
+Temp publishes: 136, controller temp receives: 136
+Humidity publishes: 140, controller humidity receives: 140
+Package publishes: 4, controller package receives: 4
+Rack registers: 1
+Withdrawal queries: 29, package lists: 29, withdrawal requests: 2
+Robot route completions: package pickup=2, rack store=2, rack retrieve=0, pickup-zone drop=0
+UE1 MQTT RxPkts: 156 Tput: 0.67 Kbps
+UE2 MQTT RxPkts: 172 Tput: 0.74 Kbps
+UE3 MQTT RxPkts: 156 Tput: 0.67 Kbps
+UE4 MQTT RxPkts: 156 Tput: 0.67 Kbps
+UE5 MQTT RxPkts: 31 Tput: 0.16 Kbps
+UE6 MQTT RxPkts: 32 Tput: 0.17 Kbps
+UE7 MQTT RxPkts: 0 Tput: 0.00 Kbps
+UE8 MQTT RxPkts: 18 Tput: 0.07 Kbps
+robot1 MQTT RxPkts: 31 Tput: 0.16 Kbps
+robot2 MQTT RxPkts: 32 Tput: 0.17 Kbps
+robot3 MQTT RxPkts: 0 Tput: 0.00 Kbps
+camera1 Video RxPkts: 83799 Tput: 5578.09 Kbps
+ERROR: Warehouse MQTT verification failed.
+Command 'build/scratch/warehouse-isac/ns3.46-warehouse-no-isac-default --simTime=180 --gnbAntennaRows=8 --gnbAntennaCols=8 --sionnaFixedUlMcs=3 --gnbTxPowerDbm=24 --ueTxPowerDbm=23 --gnbNoiseFigureDb=5 --ueNoiseFigureDb=17 --idealAnalogArrayGain=true --useElementMimoCsi=true --showcaseBytes=131072 --pacingRateBps=50000000 --geometryProfile=large --outputDir=/home/aung/code/docte6g/results/warehouse/no-isac-8x8 --beamformingPeriodicity=0.25' returned non-zero exit status 1.

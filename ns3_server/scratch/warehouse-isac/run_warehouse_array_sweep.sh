@@ -4,21 +4,22 @@
 # gNB arrays. The same topology, random seed, mobility, and offered load are
 # used in every run.
 #
-# The default showcase profile is sized for a complete sweep within 2-3 hours:
-# - 30 simulated seconds per run for propagation and application-flow metrics
-# - interference-stressed downlink probe traffic over the V3 warehouse geometry at 30 dBm gNB power
-# - stale communication-only beam tracking for no-ISAC mobile UEs
-# - faster sensing-assisted beam tracking for ISAC mobile UEs
+# The default showcase profile is sized for a complete sweep within several hours:
+# - 180 simulated seconds per run for the complete warehouse workflow
+# - 500 KB showcase payload per mission; configurable gNB/UE power; 17 dB UE NF; 200 MHz bandwidth
+# - identical beamforming period for both ISAC and no-ISAC; only sensing is the variable
 # - direction-sensitive beamforming gain so stale beams affect robot links
 # - lightweight sensing frames for ISAC; use --full-workflow for route-motion validation
 # - deterministic robot routes by default so mobility is identical across runs
 # - a hard 180-minute wall-clock limit for the complete sweep
+# - "large" geometry profile (100x70m, gNB SW corner) enabled by --geometry-profile large
 #
 # Usage from ns3_server:
 #   scratch/warehouse-isac/run_warehouse_array_sweep.sh
 #   scratch/warehouse-isac/run_warehouse_array_sweep.sh --quick
 #   scratch/warehouse-isac/run_warehouse_array_sweep.sh --full-workflow
 #   scratch/warehouse-isac/run_warehouse_array_sweep.sh --sim-time 120
+#   scratch/warehouse-isac/run_warehouse_array_sweep.sh --geometry-profile large
 
 set -euo pipefail
 
@@ -27,27 +28,24 @@ NS3_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPO_DIR="$(cd "${NS3_DIR}/.." && pwd)"
 
 RESULTS_DIR="${REPO_DIR}/results/warehouse"
-SIM_TIME=30
-DL_PACKET_INTERVAL_US=1000
-UL_PACKET_INTERVAL_US=2500
-CHALLENGE_PACKET_SIZE_BYTES=1200
-CHALLENGE_START_SEC=-1
-ROBOT_ROUTE_START_SEC=-1
-ROBOT_DROP_START_SEC=-1
-ENABLE_UPLINK=false
-ENABLE_WAREHOUSE_WORKFLOW=false
-ISAC_FRAME_INTERVAL=2
-ISAC_SAMPLES_PER_SRC=20000
+GEOMETRY_PROFILE="baseline"
+SIM_TIME=180
+ISAC_FRAME_INTERVAL=5
+ISAC_SAMPLES_PER_SRC=2000000
 ISAC_BEAMWIDTH_DEG=20
 SIONNA_FIXED_UL_MCS=3
-GNB_TX_POWER_DBM=30
+GNB_TX_POWER_DBM=24
 UE_TX_POWER_DBM=23
 GNB_NOISE_FIGURE_DB=5
-UE_NOISE_FIGURE_DB=7
-NO_ISAC_BEAMFORMING_PERIOD=10
-ISAC_BEAMFORMING_PERIOD=1
-IDEAL_ANALOG_ARRAY_GAIN=false
-MAX_SWEEP_MINUTES=180
+UE_NOISE_FIGURE_DB=17
+BEAMFORMING_PERIOD=1
+SHOWCASE_BYTES=131072
+PACING_RATE_BPS=50000000
+IDEAL_ANALOG_ARRAY_GAIN=true
+ISAC_MIN_POWER=1e-25
+USE_ELEMENT_MIMO_CSI=true
+BEAMFORMING_METHOD="ns3::DirectPathBeamforming"
+MAX_SWEEP_MINUTES=360
 EXPAT_LIB="/home/aung/anaconda3/envs/6G/lib/libexpat.so"
 
 usage() {
@@ -62,10 +60,10 @@ while [[ $# -gt 0 ]]; do
             ISAC_SAMPLES_PER_SRC=5000
             shift
             ;;
+
         --full-workflow)
-            SIM_TIME=120
+            [[ ${SIM_TIME} -lt 180 ]] && SIM_TIME=180
             ISAC_FRAME_INTERVAL=2
-            ENABLE_WAREHOUSE_WORKFLOW=true
             shift
             ;;
         --sim-time)
@@ -75,46 +73,6 @@ while [[ $# -gt 0 ]]; do
         --results-dir)
             RESULTS_DIR="$2"
             shift 2
-            ;;
-        --dl-packet-interval-us)
-            DL_PACKET_INTERVAL_US="$2"
-            shift 2
-            ;;
-        --ul-packet-interval-us)
-            UL_PACKET_INTERVAL_US="$2"
-            shift 2
-            ;;
-        --challenge-packet-size-bytes)
-            CHALLENGE_PACKET_SIZE_BYTES="$2"
-            shift 2
-            ;;
-        --challenge-start)
-            CHALLENGE_START_SEC="$2"
-            shift 2
-            ;;
-        --robot-route-start)
-            ROBOT_ROUTE_START_SEC="$2"
-            shift 2
-            ;;
-        --robot-drop-start)
-            ROBOT_DROP_START_SEC="$2"
-            shift 2
-            ;;
-        --downlink-only)
-            ENABLE_UPLINK=false
-            shift
-            ;;
-        --bidirectional)
-            ENABLE_UPLINK=true
-            shift
-            ;;
-        --enable-warehouse-workflow)
-            ENABLE_WAREHOUSE_WORKFLOW=true
-            shift
-            ;;
-        --disable-warehouse-workflow)
-            ENABLE_WAREHOUSE_WORKFLOW=false
-            shift
             ;;
         --isac-frame-interval)
             ISAC_FRAME_INTERVAL="$2"
@@ -148,16 +106,20 @@ while [[ $# -gt 0 ]]; do
             UE_NOISE_FIGURE_DB="$2"
             shift 2
             ;;
-        --no-isac-beamforming-period)
-            NO_ISAC_BEAMFORMING_PERIOD="$2"
+        --beamforming-period)
+            BEAMFORMING_PERIOD="$2"
             shift 2
             ;;
-        --isac-beamforming-period)
-            ISAC_BEAMFORMING_PERIOD="$2"
+        --showcase-bytes)
+            SHOWCASE_BYTES="$2"
             shift 2
             ;;
         --ideal-analog-array-gain)
             IDEAL_ANALOG_ARRAY_GAIN="$2"
+            shift 2
+            ;;
+        --geometry-profile)
+            GEOMETRY_PROFILE="$2"
             shift 2
             ;;
         --max-sweep-minutes)
@@ -185,6 +147,13 @@ if [[ -f "${EXPAT_LIB}" ]]; then
     export LD_PRELOAD="${EXPAT_LIB}${LD_PRELOAD:+:${LD_PRELOAD}}"
 fi
 
+# The ns-3 binary embeds libpython from the conda env.  Without PYTHONHOME
+# pointing at the same env, Python's stdlib search falls back to the system
+# Python paths, causing an ABI mismatch when numpy's C extensions try to
+# import the datetime capsule.
+export PYTHONHOME="${CONDA_PREFIX}"
+export PYTHONPATH="${CONDA_PREFIX}/lib/python3.12/site-packages${PYTHONPATH:+:${PYTHONPATH}}"
+
 run_sweep() {
     cd "${NS3_DIR}"
     for scenario in warehouse-no-isac warehouse-isac; do
@@ -195,41 +164,46 @@ run_sweep() {
             local output_dir="${RESULTS_DIR}/${result_prefix}-${size}x${size}"
             mkdir -p "${output_dir}"
 
+            # Scale beamforming period inversely with array size: narrower beams need
+            # faster updates to keep moving robots within the main lobe.
+            local beam_period
+            case "${size}" in
+                2) beam_period=1.0 ;;
+                4) beam_period=0.5 ;;
+                8) beam_period=0.25 ;;
+                *) beam_period="${BEAMFORMING_PERIOD}" ;;
+            esac
+
             echo
-            echo ">>> ${scenario} gNB ${size}x${size}"
+            echo ">>> ${scenario} gNB ${size}x${size} (beamPeriod=${beam_period}s)"
             echo "    results: ${output_dir}"
 
             local scenario_args=(
                 "--simTime=${SIM_TIME}"
                 "--gnbAntennaRows=${size}"
                 "--gnbAntennaCols=${size}"
-                "--enableChallengeTraffic=true"
-                "--challengeEnableUl=${ENABLE_UPLINK}"
-                "--enableWarehouseWorkflow=${ENABLE_WAREHOUSE_WORKFLOW}"
-                "--challengePacketIntervalUs=${DL_PACKET_INTERVAL_US}"
-                "--challengeUlPacketIntervalUs=${UL_PACKET_INTERVAL_US}"
-                "--challengePacketSizeBytes=${CHALLENGE_PACKET_SIZE_BYTES}"
-                "--challengeStart=${CHALLENGE_START_SEC}"
-                "--robotRouteStart=${ROBOT_ROUTE_START_SEC}"
-                "--robotDropStart=${ROBOT_DROP_START_SEC}"
                 "--sionnaFixedUlMcs=${SIONNA_FIXED_UL_MCS}"
                 "--gnbTxPowerDbm=${GNB_TX_POWER_DBM}"
                 "--ueTxPowerDbm=${UE_TX_POWER_DBM}"
                 "--gnbNoiseFigureDb=${GNB_NOISE_FIGURE_DB}"
                 "--ueNoiseFigureDb=${UE_NOISE_FIGURE_DB}"
                 "--idealAnalogArrayGain=${IDEAL_ANALOG_ARRAY_GAIN}"
+                "--useElementMimoCsi=${USE_ELEMENT_MIMO_CSI}"
+                "--beamformingMethod=${BEAMFORMING_METHOD}"
+                "--showcaseBytes=${SHOWCASE_BYTES}"
+                "--pacingRateBps=${PACING_RATE_BPS}"
+                "--geometryProfile=${GEOMETRY_PROFILE}"
                 "--outputDir=${output_dir}"
+            )
+            scenario_args+=(
+                "--beamformingPeriodicity=${beam_period}"
             )
             if [[ "${scenario}" == "warehouse-isac" ]]; then
                 scenario_args+=(
-                    "--beamformingPeriodicity=${ISAC_BEAMFORMING_PERIOD}"
                     "--isacSensingFrameInterval=${ISAC_FRAME_INTERVAL}"
                     "--isacBeamwidthDeg=${ISAC_BEAMWIDTH_DEG}"
                     "--isacSamplesPerSrc=${ISAC_SAMPLES_PER_SRC}"
-                )
-            else
-                scenario_args+=(
-                    "--beamformingPeriodicity=${NO_ISAC_BEAMFORMING_PERIOD}"
+                    "--isacMinPower=${ISAC_MIN_POWER}"
                 )
             fi
 
@@ -240,10 +214,9 @@ run_sweep() {
 }
 
 export -f run_sweep
-export SCRIPT_DIR NS3_DIR RESULTS_DIR SIM_TIME DL_PACKET_INTERVAL_US UL_PACKET_INTERVAL_US
-export CHALLENGE_PACKET_SIZE_BYTES CHALLENGE_START_SEC ROBOT_ROUTE_START_SEC ROBOT_DROP_START_SEC
-export ENABLE_UPLINK ENABLE_WAREHOUSE_WORKFLOW ISAC_FRAME_INTERVAL ISAC_SAMPLES_PER_SRC ISAC_BEAMWIDTH_DEG SIONNA_FIXED_UL_MCS
+export SCRIPT_DIR NS3_DIR RESULTS_DIR SIM_TIME
+export ISAC_FRAME_INTERVAL ISAC_SAMPLES_PER_SRC ISAC_BEAMWIDTH_DEG SIONNA_FIXED_UL_MCS
 export GNB_TX_POWER_DBM UE_TX_POWER_DBM GNB_NOISE_FIGURE_DB UE_NOISE_FIGURE_DB
-export NO_ISAC_BEAMFORMING_PERIOD ISAC_BEAMFORMING_PERIOD IDEAL_ANALOG_ARRAY_GAIN
+export BEAMFORMING_PERIOD IDEAL_ANALOG_ARRAY_GAIN ISAC_MIN_POWER USE_ELEMENT_MIMO_CSI SHOWCASE_BYTES PACING_RATE_BPS GEOMETRY_PROFILE BEAMFORMING_METHOD
 
 timeout --foreground "${MAX_SWEEP_MINUTES}m" bash -c run_sweep

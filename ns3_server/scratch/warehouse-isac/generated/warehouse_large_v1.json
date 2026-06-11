@@ -1,0 +1,759 @@
+{
+  "name": "warehouse_large_v1",
+  "purpose": "100 m \u00d7 70 m warehouse exposing 2x2 failure and 8x8 recovery at 15 GHz with 30 dBm gNB TX. Six metal rack rows force 1\u20133 bounce NLOS paths at 54\u201399 m UE distances.",
+  "why_current_geometry_fails": "48 m \u00d7 38 m at 30 dBm places all UEs within 25 m of gNB. Sionna constructive multipath gives ~74 dB path loss (10 dB better than FSPL). Even 2\u00d72 gets +32 dB SNR \u2014 saturated at max MCS. No array size or ISAC change can improve a ceiling-pegged link.",
+  "key_design_decisions": {
+    "gnb_tx_power_dbm": 30,
+    "warehouse_size_m": "100 x 70",
+    "gnb_position": "SW corner [-48,-33,6] \u2014 maximises path-length spread",
+    "rack_rows": "6 rows at X=\u221232,\u221218,\u22124,+10,+24,+38; run N-S; 2m wide, 4.5m tall",
+    "target_nlos_at_challenge_ue": "+10 dB vs FSPL (1-bounce off metal rack or ceiling). At 80 m + 10 dB NLOS: PL=104 dB, 2x2 SNR=2 dB (fail), 8x8 SNR=11.5 dB (functional). The 9.5 dB array gain gap drives both throughput and sensing improvement."
+  },
+  "scene": {
+    "xml_file": "assets/scenes/warehouse/warehouse_large_v1.xml",
+    "note": "Mitsuba3 cube primitives \u2014 no Blender PLY files required",
+    "bounds_m": {
+      "x_min": -50.0,
+      "x_max": 50.0,
+      "y_min": -35.0,
+      "y_max": 35.0
+    },
+    "ceiling_height_m": 7.0,
+    "racks": [
+      {
+        "name": "rack_row_1",
+        "x_min": -33.0,
+        "x_max": -31.0,
+        "y_min": -24.0,
+        "y_max": 30.0,
+        "z_min": 0.0,
+        "z_max": 4.5,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_2",
+        "x_min": -19.0,
+        "x_max": -17.0,
+        "y_min": -24.0,
+        "y_max": 30.0,
+        "z_min": 0.0,
+        "z_max": 4.5,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_3",
+        "x_min": -5.0,
+        "x_max": -3.0,
+        "y_min": -24.0,
+        "y_max": 30.0,
+        "z_min": 0.0,
+        "z_max": 4.5,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_4",
+        "x_min": 9.0,
+        "x_max": 11.0,
+        "y_min": -24.0,
+        "y_max": 30.0,
+        "z_min": 0.0,
+        "z_max": 4.5,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_5",
+        "x_min": 23.0,
+        "x_max": 25.0,
+        "y_min": -24.0,
+        "y_max": 30.0,
+        "z_min": 0.0,
+        "z_max": 4.5,
+        "material": "itu_metal"
+      },
+      {
+        "name": "rack_row_6",
+        "x_min": 37.0,
+        "x_max": 39.0,
+        "y_min": -24.0,
+        "y_max": 30.0,
+        "z_min": 0.0,
+        "z_max": 4.5,
+        "material": "itu_metal"
+      }
+    ],
+    "conveyor": {
+      "name": "conveyor_belt",
+      "x_min": -10.0,
+      "x_max": 10.0,
+      "y_min": -33.0,
+      "y_max": -26.0,
+      "z_min": 0.0,
+      "z_max": 0.8,
+      "material": "itu_metal"
+    }
+  },
+  "radio": {
+    "carrier_frequency_hz": 15000000000.0,
+    "bandwidth_hz": 190080000.0,
+    "gnb_tx_power_dbm": 30.0,
+    "ue_noise_figure_db": 17.0,
+    "ue_noise_floor_dbm": -74.21,
+    "array_gains_db": {
+      "2x2": 2.0,
+      "4x4": 5.4,
+      "8x8": 11.5
+    }
+  },
+  "gnb": {
+    "position_m": [
+      -48.0,
+      -33.0,
+      6.0
+    ],
+    "look_at_m": [
+      0.0,
+      0.0,
+      1.5
+    ],
+    "sionna_object_name": "Tx_gNB"
+  },
+  "rack_sensors": [
+    {
+      "name": "rack_sensor_1",
+      "role": "fixed_rack_sensor",
+      "radio_class": "control_near",
+      "position_m": [
+        -41.0,
+        24.0,
+        1.5
+      ],
+      "distance_to_gnb_m": 57.6,
+      "free_space_pl_db": 91.2,
+      "snr_budget": {
+        "fspl_only": {
+          "2x2": 15.0,
+          "4x4": 18.4,
+          "8x8": 24.5
+        },
+        "nlos_plus_10db": {
+          "2x2": 5.0,
+          "4x4": 8.4,
+          "8x8": 14.5
+        }
+      }
+    },
+    {
+      "name": "rack_sensor_2",
+      "role": "fixed_rack_sensor",
+      "radio_class": "control_near",
+      "position_m": [
+        -25.0,
+        24.0,
+        1.5
+      ],
+      "distance_to_gnb_m": 61.6,
+      "free_space_pl_db": 91.8,
+      "snr_budget": {
+        "fspl_only": {
+          "2x2": 14.4,
+          "4x4": 17.8,
+          "8x8": 23.9
+        },
+        "nlos_plus_10db": {
+          "2x2": 4.4,
+          "4x4": 7.8,
+          "8x8": 13.9
+        }
+      }
+    },
+    {
+      "name": "rack_sensor_3",
+      "role": "fixed_rack_sensor",
+      "radio_class": "challenge_mid",
+      "position_m": [
+        -11.0,
+        24.0,
+        1.5
+      ],
+      "distance_to_gnb_m": 68.1,
+      "free_space_pl_db": 92.6,
+      "snr_budget": {
+        "fspl_only": {
+          "2x2": 13.6,
+          "4x4": 17.0,
+          "8x8": 23.1
+        },
+        "nlos_plus_10db": {
+          "2x2": 3.6,
+          "4x4": 7.0,
+          "8x8": 13.1
+        }
+      }
+    },
+    {
+      "name": "rack_sensor_4",
+      "role": "fixed_rack_sensor",
+      "radio_class": "challenge_mid",
+      "position_m": [
+        3.0,
+        24.0,
+        1.5
+      ],
+      "distance_to_gnb_m": 76.6,
+      "free_space_pl_db": 93.7,
+      "snr_budget": {
+        "fspl_only": {
+          "2x2": 12.6,
+          "4x4": 16.0,
+          "8x8": 22.1
+        },
+        "nlos_plus_10db": {
+          "2x2": 2.6,
+          "4x4": 6.0,
+          "8x8": 12.1
+        }
+      }
+    },
+    {
+      "name": "rack_sensor_5",
+      "role": "fixed_rack_sensor",
+      "radio_class": "challenge_far",
+      "position_m": [
+        17.0,
+        24.0,
+        1.5
+      ],
+      "distance_to_gnb_m": 86.6,
+      "free_space_pl_db": 94.7,
+      "snr_budget": {
+        "fspl_only": {
+          "2x2": 11.5,
+          "4x4": 14.9,
+          "8x8": 21.0
+        },
+        "nlos_plus_10db": {
+          "2x2": 1.5,
+          "4x4": 4.9,
+          "8x8": 11.0
+        }
+      }
+    },
+    {
+      "name": "rack_sensor_6",
+      "role": "fixed_rack_sensor",
+      "radio_class": "challenge_far",
+      "position_m": [
+        31.0,
+        24.0,
+        1.5
+      ],
+      "distance_to_gnb_m": 97.5,
+      "free_space_pl_db": 95.8,
+      "snr_budget": {
+        "fspl_only": {
+          "2x2": 10.5,
+          "4x4": 13.9,
+          "8x8": 20.0
+        },
+        "nlos_plus_10db": {
+          "2x2": 0.5,
+          "4x4": 3.9,
+          "8x8": 10.0
+        }
+      }
+    }
+  ],
+  "mobile_robots": [
+    {
+      "name": "robot_1",
+      "role": "mobile_robot",
+      "start_position_m": [
+        -44.0,
+        -30.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_1_route",
+        "waypoints_m": [
+          [
+            -44.0,
+            -30.0,
+            1.5
+          ],
+          [
+            -41.0,
+            2.0,
+            1.5
+          ],
+          [
+            -41.0,
+            24.0,
+            1.5
+          ],
+          [
+            -25.0,
+            24.0,
+            1.5
+          ],
+          [
+            -25.0,
+            -5.0,
+            1.5
+          ],
+          [
+            -44.0,
+            -30.0,
+            1.5
+          ]
+        ]
+      },
+      "max_distance_to_gnb_m": 61.6,
+      "racks_crossed_to_farthest": 1
+    },
+    {
+      "name": "robot_2",
+      "role": "mobile_robot",
+      "start_position_m": [
+        -40.0,
+        -28.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_2_route",
+        "waypoints_m": [
+          [
+            -40.0,
+            -28.0,
+            1.5
+          ],
+          [
+            -25.0,
+            0.0,
+            1.5
+          ],
+          [
+            -11.0,
+            24.0,
+            1.5
+          ],
+          [
+            -11.0,
+            0.0,
+            1.5
+          ],
+          [
+            -40.0,
+            -28.0,
+            1.5
+          ]
+        ]
+      },
+      "max_distance_to_gnb_m": 68.1,
+      "racks_crossed_to_farthest": 2
+    },
+    {
+      "name": "robot_3",
+      "role": "mobile_robot",
+      "start_position_m": [
+        -36.0,
+        -28.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_3_route",
+        "waypoints_m": [
+          [
+            -36.0,
+            -28.0,
+            1.5
+          ],
+          [
+            -11.0,
+            0.0,
+            1.5
+          ],
+          [
+            3.0,
+            24.0,
+            1.5
+          ],
+          [
+            3.0,
+            0.0,
+            1.5
+          ],
+          [
+            -36.0,
+            -28.0,
+            1.5
+          ]
+        ]
+      },
+      "max_distance_to_gnb_m": 76.6,
+      "racks_crossed_to_farthest": 3
+    },
+    {
+      "name": "robot_4",
+      "role": "mobile_robot",
+      "start_position_m": [
+        -32.0,
+        -28.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_4_route",
+        "waypoints_m": [
+          [
+            -32.0,
+            -28.0,
+            1.5
+          ],
+          [
+            3.0,
+            0.0,
+            1.5
+          ],
+          [
+            17.0,
+            24.0,
+            1.5
+          ],
+          [
+            17.0,
+            0.0,
+            1.5
+          ],
+          [
+            -32.0,
+            -28.0,
+            1.5
+          ]
+        ]
+      },
+      "max_distance_to_gnb_m": 86.6,
+      "racks_crossed_to_farthest": 4
+    },
+    {
+      "name": "robot_5",
+      "role": "mobile_robot",
+      "start_position_m": [
+        -28.0,
+        -28.0,
+        1.5
+      ],
+      "route": {
+        "name": "robot_5_route",
+        "waypoints_m": [
+          [
+            -28.0,
+            -28.0,
+            1.5
+          ],
+          [
+            17.0,
+            0.0,
+            1.5
+          ],
+          [
+            31.0,
+            24.0,
+            1.5
+          ],
+          [
+            31.0,
+            0.0,
+            1.5
+          ],
+          [
+            -28.0,
+            -28.0,
+            1.5
+          ]
+        ]
+      },
+      "max_distance_to_gnb_m": 97.5,
+      "racks_crossed_to_farthest": 5
+    }
+  ],
+  "package_sensors": [
+    {
+      "name": "package_sensor_1",
+      "position_m": [
+        -6.0,
+        -30.0,
+        1.2
+      ]
+    },
+    {
+      "name": "package_sensor_2",
+      "position_m": [
+        6.0,
+        -30.0,
+        1.2
+      ]
+    }
+  ],
+  "video_client": {
+    "name": "video_client_1",
+    "position_m": [
+      48.0,
+      32.0,
+      1.5
+    ]
+  },
+  "drop_zone_m": [
+    30.0,
+    -30.0,
+    1.5
+  ],
+  "ns3_scenario_bounds": {
+    "BoxValue": "Box(-50.0, 50.0, -35.0, 35.0, 0.0, 2.0)"
+  },
+  "snr_budget_table": [
+    {
+      "node": "rack_sensor_1",
+      "radio_class": "control_near",
+      "distance_m": 57.6,
+      "free_space_pl_db": 91.2,
+      "snr_fspl_only": {
+        "2x2": 15.0,
+        "4x4": 18.4,
+        "8x8": 24.5
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 7.0,
+        "4x4": 10.4,
+        "8x8": 16.5
+      },
+      "snr_nlos_plus12db": {
+        "2x2": 3.0,
+        "4x4": 6.4,
+        "8x8": 12.5
+      }
+    },
+    {
+      "node": "rack_sensor_2",
+      "radio_class": "control_near",
+      "distance_m": 61.6,
+      "free_space_pl_db": 91.8,
+      "snr_fspl_only": {
+        "2x2": 14.4,
+        "4x4": 17.8,
+        "8x8": 23.9
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 6.4,
+        "4x4": 9.8,
+        "8x8": 15.9
+      },
+      "snr_nlos_plus12db": {
+        "2x2": 2.4,
+        "4x4": 5.8,
+        "8x8": 11.9
+      }
+    },
+    {
+      "node": "rack_sensor_3",
+      "radio_class": "challenge_mid",
+      "distance_m": 68.1,
+      "free_space_pl_db": 92.6,
+      "snr_fspl_only": {
+        "2x2": 13.6,
+        "4x4": 17.0,
+        "8x8": 23.1
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 5.6,
+        "4x4": 9.0,
+        "8x8": 15.1
+      },
+      "snr_nlos_plus12db": {
+        "2x2": 1.6,
+        "4x4": 5.0,
+        "8x8": 11.1
+      }
+    },
+    {
+      "node": "rack_sensor_4",
+      "radio_class": "challenge_mid",
+      "distance_m": 76.6,
+      "free_space_pl_db": 93.7,
+      "snr_fspl_only": {
+        "2x2": 12.6,
+        "4x4": 16.0,
+        "8x8": 22.1
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 4.6,
+        "4x4": 8.0,
+        "8x8": 14.1
+      },
+      "snr_nlos_plus12db": {
+        "2x2": 0.6,
+        "4x4": 4.0,
+        "8x8": 10.1
+      }
+    },
+    {
+      "node": "rack_sensor_5",
+      "radio_class": "challenge_far",
+      "distance_m": 86.6,
+      "free_space_pl_db": 94.7,
+      "snr_fspl_only": {
+        "2x2": 11.5,
+        "4x4": 14.9,
+        "8x8": 21.0
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 3.5,
+        "4x4": 6.9,
+        "8x8": 13.0
+      },
+      "snr_nlos_plus12db": {
+        "2x2": -0.5,
+        "4x4": 2.9,
+        "8x8": 9.0
+      }
+    },
+    {
+      "node": "rack_sensor_6",
+      "radio_class": "challenge_far",
+      "distance_m": 97.5,
+      "free_space_pl_db": 95.8,
+      "snr_fspl_only": {
+        "2x2": 10.5,
+        "4x4": 13.9,
+        "8x8": 20.0
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 2.5,
+        "4x4": 5.9,
+        "8x8": 12.0
+      },
+      "snr_nlos_plus12db": {
+        "2x2": -1.5,
+        "4x4": 1.9,
+        "8x8": 8.0
+      }
+    },
+    {
+      "node": "robot_1@farthest",
+      "radio_class": "mobile_transition",
+      "distance_m": 61.6,
+      "free_space_pl_db": 91.8,
+      "snr_fspl_only": {
+        "2x2": 14.4,
+        "4x4": 17.8,
+        "8x8": 23.9
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 6.4,
+        "4x4": 9.8,
+        "8x8": 15.9
+      },
+      "snr_nlos_plus12db": {
+        "2x2": 2.4,
+        "4x4": 5.8,
+        "8x8": 11.9
+      }
+    },
+    {
+      "node": "robot_2@farthest",
+      "radio_class": "mobile_transition",
+      "distance_m": 68.1,
+      "free_space_pl_db": 92.6,
+      "snr_fspl_only": {
+        "2x2": 13.6,
+        "4x4": 17.0,
+        "8x8": 23.1
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 5.6,
+        "4x4": 9.0,
+        "8x8": 15.1
+      },
+      "snr_nlos_plus12db": {
+        "2x2": 1.6,
+        "4x4": 5.0,
+        "8x8": 11.1
+      }
+    },
+    {
+      "node": "robot_3@farthest",
+      "radio_class": "mobile_transition",
+      "distance_m": 76.6,
+      "free_space_pl_db": 93.7,
+      "snr_fspl_only": {
+        "2x2": 12.6,
+        "4x4": 16.0,
+        "8x8": 22.1
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 4.6,
+        "4x4": 8.0,
+        "8x8": 14.1
+      },
+      "snr_nlos_plus12db": {
+        "2x2": 0.6,
+        "4x4": 4.0,
+        "8x8": 10.1
+      }
+    },
+    {
+      "node": "robot_4@farthest",
+      "radio_class": "mobile_transition",
+      "distance_m": 86.6,
+      "free_space_pl_db": 94.7,
+      "snr_fspl_only": {
+        "2x2": 11.5,
+        "4x4": 14.9,
+        "8x8": 21.0
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 3.5,
+        "4x4": 6.9,
+        "8x8": 13.0
+      },
+      "snr_nlos_plus12db": {
+        "2x2": -0.5,
+        "4x4": 2.9,
+        "8x8": 9.0
+      }
+    },
+    {
+      "node": "robot_5@farthest",
+      "radio_class": "mobile_transition",
+      "distance_m": 97.5,
+      "free_space_pl_db": 95.8,
+      "snr_fspl_only": {
+        "2x2": 10.5,
+        "4x4": 13.9,
+        "8x8": 20.0
+      },
+      "snr_nlos_plus8db": {
+        "2x2": 2.5,
+        "4x4": 5.9,
+        "8x8": 12.0
+      },
+      "snr_nlos_plus12db": {
+        "2x2": -1.5,
+        "4x4": 1.9,
+        "8x8": 8.0
+      }
+    }
+  ],
+  "implementation_checklist": [
+    "1. Copy warehouse_large_v1.xml to assets/scenes/warehouse/",
+    "2. Update sceneXml path in warehouse-scenario.cc",
+    "3. Set gnbTxPowerDbm = 30 (no change from current)",
+    "4. Set gnbPos = Vector(-48, -33, 6), gnbLookAt = Vector(0, 0, 1.5)",
+    "5. Replace rackSensorPositions with the 6 positions in rack_sensors[]",
+    "6. Replace mobileRobotPositions and routes with the 5 robots above",
+    "7. Update Bounds BoxValue to Box(-50, 50, -35, 35, 0, 2)",
+    "8. Smoke-test: run isac-4x4, check mean_pathloss_db.",
+    "   - If < 90 dB: Sionna finds too many strong reflections;      add 2 more rack rows (x=+44 and x=-40) or move sensors deeper into aisles.",
+    "   - If > 115 dB: links too poor even for 8x8;      move sensors 8 m south (toward gNB) or remove 1\u20132 outer rack rows.",
+    "   - Target: mean_pathloss_db in 95\u2013110 dB range across all challenge UEs."
+  ],
+  "isac_advantage_mechanism": "8x8 has a ~11\u00b0 beam. When a robot rounds a rack corner, the optimal path switches from direct to 1-bounce off a metal wall. Without ISAC, the beam scanner needs 1\u20132 s to re-discover the new best beam, causing a throughput dip. With ISAC, sensing detects the robot's new position and pre-steers to the reflected path BEFORE the dip happens. The narrower the beam the larger the miss penalty \u2014 so ISAC gain scales with array size, which IS the hypothesis."
+}

@@ -144,7 +144,10 @@ CreateDirectPathBfv(const Ptr<MobilityModel>& a,
     for (int ind = 0; ind < totNoArrayElements; ind++)
     {
         Vector loc = antenna->GetElementLocation(ind);
-        double phase = -2 * M_PI *
+        // The propagation models multiply the array response by the beam
+        // weights directly, so the transmit/receive weights must be the
+        // conjugate of the steering vector.
+        double phase = 2 * M_PI *
                        (sin(vAngleRadian) * cos(hAngleRadian) * loc.x +
                         sin(vAngleRadian) * sin(hAngleRadian) * loc.y + cos(vAngleRadian) * loc.z);
         antennaWeights[ind] = exp(std::complex<double>(0, phase)) * power;

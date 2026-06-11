@@ -1,0 +1,44 @@
+ninja: no work to do.
+/home/aung/anaconda3/envs/6G/lib/python3.12/site-packages/torch/cuda/__init__.py:435: UserWarning: 
+    Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
+    Minimum and Maximum cuda capability supported by this version of PyTorch is
+    (8.0) - (12.0)
+    
+  queued_call()
+[MTI-prime] frame 1/1: 603 clutter ERPs added to background
+pybullet build time: Jan  6 2026 23:44:17
+=== Warehouse ISAC Simulation ===
+Scene:       /home/aung/code/docte6g/assets/scenes/warehouse/warehouse_v4.xml
+Frequency:   15 GHz
+ISAC:        ENABLED
+Sim time:    180 s
+Starting simulation...
+
+=== Simulation Complete ===
+Total flows:  52
+Total TxPkts: 31809
+Total RxPkts: 3911
+MQTT TxPkts:  2159
+MQTT RxPkts:  2101
+MQTT Tput:    449.87 Kbps
+Temp publishes: 136, controller temp receives: 102
+Humidity publishes: 140, controller humidity receives: 106
+Package publishes: 4, controller package receives: 4
+Rack registers: 4
+Withdrawal queries: 28, package lists: 28, withdrawal requests: 12
+Robot route completions: package pickup=3, rack store=3, rack retrieve=9, pickup-zone drop=8
+UE1 MQTT RxPkts: 172 Tput: 0.74 Kbps
+UE2 MQTT RxPkts: 200 Tput: 0.94 Kbps
+UE3 MQTT RxPkts: 172 Tput: 0.74 Kbps
+UE4 MQTT RxPkts: 27 Tput: 437.94 Kbps
+UE5 MQTT RxPkts: 63 Tput: 0.43 Kbps
+UE6 MQTT RxPkts: 79 Tput: 0.38 Kbps
+UE7 MQTT RxPkts: 82 Tput: 0.40 Kbps
+UE8 MQTT RxPkts: 12 Tput: 1.87 Kbps
+robot1 MQTT RxPkts: 63 Tput: 0.43 Kbps
+robot2 MQTT RxPkts: 79 Tput: 0.38 Kbps
+robot3 MQTT RxPkts: 82 Tput: 0.40 Kbps
+camera1 Video RxPkts: 46 Tput: 5716.38 Kbps
+ISAC detections: 245
+ERROR: Warehouse MQTT verification failed.
+Command 'build/scratch/warehouse-isac/ns3.46-warehouse-isac-default --simTime=180 --gnbAntennaRows=2 --gnbAntennaCols=2 --sionnaFixedUlMcs=3 --gnbTxPowerDbm=10 --ueTxPowerDbm=10 --gnbNoiseFigureDb=5 --ueNoiseFigureDb=7 --idealAnalogArrayGain=false --showcaseBytes=512000 --outputDir=/home/aung/code/docte6g/results/warehouse-v3-full/isac-2x2 --beamformingPeriodicity=1 --isacSensingFrameInterval=2 --isacBeamwidthDeg=20 --isacSamplesPerSrc=20000' returned non-zero exit status 1.

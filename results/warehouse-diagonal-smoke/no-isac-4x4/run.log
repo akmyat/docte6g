@@ -1,0 +1,15 @@
+ninja: no work to do.
+/home/aung/anaconda3/envs/6G/lib/python3.12/site-packages/torch/cuda/__init__.py:435: UserWarning: 
+    Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
+    Minimum and Maximum cuda capability supported by this version of PyTorch is
+    (8.0) - (12.0)
+    
+  queued_call()
+pybullet build time: Jan  6 2026 23:44:17
+=== Warehouse No-ISAC Simulation ===
+Scene:       /home/aung/code/docte6g/assets/scenes/warehouse/warehouse_v4.xml
+Frequency:   15 GHz
+ISAC:        DISABLED
+Sim time:    60 s
+Starting simulation...
+Process was interrupted by the user

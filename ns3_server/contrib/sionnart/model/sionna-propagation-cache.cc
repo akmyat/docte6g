@@ -187,22 +187,6 @@ HashMatrixArray(const ComplexMatrixArray& matrix)
     return hash;
 }
 
-uint64_t
-HashSpectrumValue(Ptr<const SpectrumValue> value)
-{
-    uint64_t hash = 1469598103934665603ULL;
-    if (!value)
-    {
-        return hash;
-    }
-    hash = HashCombine(hash, value->GetValuesN());
-    for (auto it = value->ConstValuesBegin(); it != value->ConstValuesEnd(); ++it)
-    {
-        hash = HashCombine(hash, HashDouble(*it));
-    }
-    return hash;
-}
-
 double
 ElapsedSeconds(std::chrono::steady_clock::time_point start)
 {
@@ -759,17 +743,6 @@ SionnaPropagationCache::GetSpectrumChannelMatrix(
     const PortCfrCacheKey portKey =
         MakePortCfrKey(link.forward, aPhasedArrayModel, bPhasedArrayModel);
 
-    const ScaledChannelCacheKey scaledKey{portKey, HashSpectrumValue(inPsd), inPsd->GetValuesN()};
-    if (entry.m_lastScaledChannelValid &&
-        entry.m_lastScaledChannelKey == scaledKey &&
-        entry.m_lastScaledChannel)
-    {
-        ++m_perfStats.scaledMatrixCacheHits;
-        m_perfStats.channelMatrixSeconds += ElapsedSeconds(matrixStart);
-        return entry.m_lastScaledChannel;
-    }
-
-    ++m_perfStats.scaledMatrixCacheMisses;
     const ComplexMatrixArray* portCfrPtr =
         GetPortCfrForEntry(entry, portKey, link.forward, aPhasedArrayModel, bPhasedArrayModel);
     if (!portCfrPtr)
@@ -806,9 +779,6 @@ SionnaPropagationCache::GetSpectrumChannelMatrix(
         }
     }
 
-    entry.m_lastScaledChannelKey = scaledKey;
-    entry.m_lastScaledChannel = channel;
-    entry.m_lastScaledChannelValid = true;
     m_perfStats.channelMatrixSeconds += ElapsedSeconds(matrixStart);
     return channel;
 }
@@ -959,9 +929,6 @@ SionnaPropagationCache::AppendPerfStats(std::ostream& os) const
     os << "cache,effective_gain_cache_hits," << m_perfStats.effectiveGainCacheHits << "\n";
     os << "cache,effective_gain_cache_misses," << m_perfStats.effectiveGainCacheMisses << "\n";
     os << "cache,effective_gain_seconds," << m_perfStats.effectiveGainSeconds << "\n";
-    os << "cache,scaled_matrix_cache_hits," << m_perfStats.scaledMatrixCacheHits << "\n";
-    os << "cache,scaled_matrix_cache_misses," << m_perfStats.scaledMatrixCacheMisses << "\n";
-
     for (const auto& [name, value] : SionnaPyEmbed::GetInstance().SionnaGetPerfStats())
     {
         os << "python," << name << "," << value << "\n";

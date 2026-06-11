@@ -369,7 +369,8 @@ SionnaMobilityModel::SetWaypoints(Vector start, Vector end, uint32_t numIntermed
 void
 SionnaMobilityModel::PeriodicUpdate(void) const {
     Update();
-    if (m_backendInitialized) {
+    // Static nodes never change position, so there is nothing to poll.
+    if (m_backendInitialized && m_mode != CONSTANT_POSITION) {
         m_updateEvent = Simulator::Schedule(m_updateInterval, &SionnaMobilityModel::PeriodicUpdate, this);
     }
 }

@@ -150,18 +150,6 @@ class SionnaPropagationCache : public Object {
             }
         };
 
-        struct ScaledChannelCacheKey {
-            PortCfrCacheKey m_portKey;
-            uint64_t m_psdHash = 0;
-            uint32_t m_psdSize = 0;
-
-            bool operator==(const ScaledChannelCacheKey& o) const {
-                return m_portKey == o.m_portKey &&
-                       m_psdHash == o.m_psdHash &&
-                       m_psdSize == o.m_psdSize;
-            }
-        };
-
         // ------------------------------------------------------------------ cache entry
         struct CacheEntry {
             CacheEntry() = default;
@@ -194,9 +182,6 @@ class SionnaPropagationCache : public Object {
             uint32_t m_mimoNumSubcarriers = 0;
             mutable std::map<PortCfrCacheKey, ComplexMatrixArray> m_portCfrCache;
             mutable std::map<EffectiveGainCacheKey, std::vector<double>> m_effectiveGainCache;
-            mutable bool m_lastScaledChannelValid = false;
-            mutable ScaledChannelCacheKey m_lastScaledChannelKey;
-            mutable Ptr<const ComplexMatrixArray> m_lastScaledChannel;
         };
 
         struct PerfStats {
@@ -207,8 +192,6 @@ class SionnaPropagationCache : public Object {
             uint64_t portCfrCacheMisses = 0;
             uint64_t effectiveGainCacheHits = 0;
             uint64_t effectiveGainCacheMisses = 0;
-            uint64_t scaledMatrixCacheHits = 0;
-            uint64_t scaledMatrixCacheMisses = 0;
             uint64_t spectrumChannelMatrixCalls = 0;
             double refreshSeconds = 0.0;
             double sionnaCalculationSeconds = 0.0;
